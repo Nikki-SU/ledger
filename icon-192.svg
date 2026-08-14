@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" fill="#f5f5f5"/>
+  <rect x="20" y="30" width="152" height="132" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="4"/>
+  <rect x="20" y="30" width="152" height="30" rx="8" fill="#1a1a1a"/>
+  <text x="96" y="52" font-size="20" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-weight="bold">账本</text>
+  <line x1="40" y1="85" x2="152" y2="85" stroke="#c72c2c" stroke-width="3"/>
+  <text x="50" y="80" font-size="12" fill="#c72c2c" font-family="sans-serif">支出</text>
+  <line x1="40" y1="115" x2="152" y2="115" stroke="#1f7a1f" stroke-width="3"/>
+  <text x="50" y="110" font-size="12" fill="#1f7a1f" font-family="sans-serif">收入</text>
+  <line x1="40" y1="140" x2="100" y2="140" stroke="#1a1a1a" stroke-width="3"/>
+  <text x="50" y="135" font-size="10" fill="#666" font-family="sans-serif">结余</text>
+</svg>
