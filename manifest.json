@@ -3,8 +3,8 @@
   "name": "账本 - 极简本地记账",
   "short_name": "账本",
   "description": "极简本地记账应用，收入绿色，支出红色，数据存储在本机",
-  "start_url": "./index.html",
-  "scope": "./",
+  "start_url": "/ledger/index.html",
+  "scope": "/ledger/",
   "display": "standalone",
   "display_override": ["standalone", "minimal-ui"],
   "orientation": "portrait",
@@ -16,24 +16,24 @@
   "shortcuts": [
     {
       "name": "记账",
-      "url": "./index.html#record",
+      "url": "/ledger/index.html#record",
       "description": "快速记账"
     },
     {
       "name": "总结",
-      "url": "./index.html#summary",
+      "url": "/ledger/index.html#summary",
       "description": "查看总结"
     }
   ],
   "icons": [
     {
-      "src": "icon-192.png",
+      "src": "/ledger/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icon-512.png",
+      "src": "/ledger/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
