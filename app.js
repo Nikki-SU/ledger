@@ -13,104 +13,194 @@ let db = null;
    IndexedDB 封装
    ==================== */
 
+
+// 兼容性检测
+const supportsIndexedDB = typeof indexedDB !== 'undefined';
+const supportsLocalStorage = typeof localStorage !== 'undefined';
+
+// 如果不支持 IndexedDB，使用 localStorage 降级
+if (!supportsIndexedDB && supportsLocalStorage) {
+    console.warn('IndexedDB 不支持，使用 localStorage 降级');
+}
+
+// 安全包装 DB 操作
 const DB = {
   async init() {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      try {
+        if (!supportsIndexedDB) {
+          throw new Error('IndexedDB not supported');
+        }
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        db = request.result;
-        resolve(db);
-      };
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          db = request.result;
+          resolve(db);
+        };
 
-      request.onupgradeneeded = (event) => {
-        const database = event.target.result;
-        const store = database.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-        store.createIndex('date', 'date', { unique: false });
-        store.createIndex('type', 'type', { unique: false });
-      };
+        request.onupgradeneeded = (event) => {
+          const database = event.target.result;
+          const store = database.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+          store.createIndex('date', 'date', { unique: false });
+          store.createIndex('type', 'type', { unique: false });
+        };
+      } catch (e) {
+        console.warn('IndexedDB 初始化失败，使用 localStorage:', e.message);
+        // 降级到 localStorage
+        if (supportsLocalStorage) {
+          try {
+            const data = localStorage.getItem(DB_NAME);
+            if (!data) localStorage.setItem(DB_NAME, '[]');
+            resolve({ type: 'localStorage' });
+          } catch (e2) {
+            reject(new Error('存储初始化失败: ' + e2.message));
+          }
+        } else {
+          reject(new Error('浏览器不支持任何存储'));
+        }
+      }
     });
   },
 
   add(record) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.add(record);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      try {
+        if (db && db.type === 'localStorage') {
+          const data = this._getLocal();
+          record.id = Date.now();
+          data.push(record);
+          this._setLocal(data);
+          resolve(record.id);
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.add(record);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   },
 
   update(id, updates) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get(id);
-
-      request.onsuccess = () => {
-        const record = request.result;
-        if (record) {
-          Object.assign(record, updates);
-          store.put(record).onsuccess = () => resolve(record);
-        } else {
-          reject(new Error('记录不存在'));
+      try {
+        if (db && db.type === 'localStorage') {
+          const data = this._getLocal();
+          const idx = data.findIndex(r => r.id === id);
+          if (idx >= 0) {
+            Object.assign(data[idx], updates);
+            this._setLocal(data);
+            resolve(data[idx]);
+          } else {
+            reject(new Error('记录不存在'));
+          }
+          return;
         }
-      };
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.get(id);
 
-      request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const record = request.result;
+          if (record) {
+            Object.assign(record, updates);
+            store.put(record).onsuccess = () => resolve(record);
+          } else {
+            reject(new Error('记录不存在'));
+          }
+        };
+
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   },
 
   delete(id) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.delete(id);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      try {
+        if (db && db.type === 'localStorage') {
+          const data = this._getLocal();
+          const filtered = data.filter(r => r.id !== id);
+          this._setLocal(filtered);
+          resolve();
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.delete(id);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   },
 
   getAll() {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      try {
+        if (db && db.type === 'localStorage') {
+          resolve(this._getLocal());
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   },
 
   getById(id) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get(id);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      try {
+        if (db && db.type === 'localStorage') {
+          const data = this._getLocal();
+          resolve(data.find(r => r.id === id) || null);
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.get(id);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   },
 
   getByDate(dateStr) {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const index = store.index('date');
-      const request = index.getAll(dateStr);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
+      try {
+        if (db && db.type === 'localStorage') {
+          const data = this._getLocal();
+          resolve(data.filter(r => r.date === dateStr));
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const index = store.index('date');
+        const request = index.getAll(dateStr);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   },
 
   async clearAll() {
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.clear();
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
+      try {
+        if (db && db.type === 'localStorage') {
+          this._setLocal([]);
+          resolve();
+          return;
+        }
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      } catch (e) { reject(e); }
     });
   }
 };
