@@ -1,10 +1,13 @@
-const CACHE_NAME = 'ledger-cache-v1';
+const CACHE_NAME = 'ledger-cache-v2';
+const BASE = '/ledger';
 const urlsToCache = [
-  './',
-  './index.html',
-  './style.css',
-  './app.js',
-  './manifest.json'
+  BASE + '/',
+  BASE + '/index.html',
+  BASE + '/style.css',
+  BASE + '/app.js',
+  BASE + '/manifest.json',
+  BASE + '/icon-192.png',
+  BASE + '/icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -23,7 +26,17 @@ self.addEventListener('fetch', (event) => {
         if (response) {
           return response;
         }
-        return fetch(event.request);
+        return fetch(event.request).then((resp) => {
+          if (resp && resp.status === 200 && resp.type === 'basic') {
+            const clone = resp.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, clone);
+            });
+          }
+          return resp;
+        }).catch(() => {
+          return caches.match(BASE + '/index.html');
+        });
       })
   );
 });
