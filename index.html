@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#f5f5f5">
+<title>账本</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <!-- 主页面 -->
+  <div class="page active" id="page-home">
+    <div class="home">
+      <div class="home-logo">账本</div>
+      <div class="home-sub">本地记账 · 数据在本机</div>
+      <button class="home-btn primary" onclick="App.showPage('record')">记 账</button>
+      <button class="home-btn secondary" onclick="App.showPage('summary')">总 结</button>
+      <button class="home-btn tertiary" onclick="App.showPage('detail')">明 细</button>
+      <div class="home-actions">
+        <button class="home-btn small" onclick="App.exportCSV()">导出CSV</button>
+        <button class="home-btn small" onclick="App.showAbout()">关于</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 记账页面 -->
+  <div class="page" id="page-record">
+    <div class="nav-bar">
+      <button class="nav-btn" onclick="App.showPage('home')">← 返回</button>
+      <div class="nav-title">记账</div>
+      <div class="nav-date" id="recordDateLabel"></div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="card stat">
+        <div class="card-label">收入</div>
+        <div class="card-value income" id="todayIncome">+0.00</div>
+      </div>
+      <div class="card stat">
+        <div class="card-label">支出</div>
+        <div class="card-value expense" id="todayExpense">-0.00</div>
+      </div>
+      <div class="card stat">
+        <div class="card-label">结余</div>
+        <div class="card-value" id="todayNet">+0.00</div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="type-switch">
+        <button id="btnExpense" class="active" onclick="App.setType('expense')">支出</button>
+        <button id="btnIncome" onclick="App.setType('income')">收入</button>
+      </div>
+      <div class="input-row">
+        <input type="text" id="inputSource" placeholder="物品/来源" autocomplete="off" class="input-source">
+        <input type="number" id="inputAmount" placeholder="金额" step="0.01" min="0" class="input-amount">
+        <button class="add-btn" onclick="App.addRecord()">+</button>
+      </div>
+    </div>
+
+    <div class="section-title">今日记录</div>
+    <div id="recordList" class="record-list"></div>
+  </div>
+
+  <!-- 总结页面 -->
+  <div class="page" id="page-summary">
+    <div class="nav-bar">
+      <button class="nav-btn" onclick="App.showPage('home')">← 返回</button>
+      <div class="nav-title">总结</div>
+      <button class="nav-btn" onclick="App.exportCSV()">导出</button>
+    </div>
+
+    <div class="view-switch">
+      <button id="viewDay" class="active" onclick="App.setSummaryView('day')">日</button>
+      <button id="viewMonth" onclick="App.setSummaryView('month')">月</button>
+      <button id="viewYear" onclick="App.setSummaryView('year')">年</button>
+    </div>
+
+    <div class="date-nav">
+      <button onclick="App.navSummary(-1)">◀</button>
+      <div class="date-label" id="summaryDateLabel"></div>
+      <button onclick="App.navSummary(1)">▶</button>
+    </div>
+
+    <div class="stats-bar">
+      <div class="card stat">
+        <div class="card-label">收入</div>
+        <div class="card-value income" id="summaryIncome">+0.00</div>
+      </div>
+      <div class="card stat">
+        <div class="card-label">支出</div>
+        <div class="card-value expense" id="summaryExpense">-0.00</div>
+      </div>
+      <div class="card stat">
+        <div class="card-label">净收入</div>
+        <div class="card-value" id="summaryNet">+0.00</div>
+      </div>
+    </div>
+
+    <div id="summaryContent" class="content-area"></div>
+  </div>
+
+  <!-- 明细页面 -->
+  <div class="page" id="page-detail">
+    <div class="nav-bar">
+      <button class="nav-btn" onclick="App.showPage('home')">← 返回</button>
+      <div class="nav-title">明细</div>
+      <button class="nav-btn" onclick="App.showStats()">统计</button>
+    </div>
+
+    <div class="filter-bar">
+      <button onclick="App.detailNav(-1)">◀</button>
+      <div class="current" id="detailLabel"></div>
+      <button onclick="App.detailNav(1)">▶</button>
+      <button class="toggle-btn" id="showAllBtn" onclick="App.toggleShowAll()">全部</button>
+    </div>
+
+    <div class="stats-bar">
+      <div class="card stat">
+        <div class="card-label">收入</div>
+        <div class="card-value income" id="detailIncome">+0.00</div>
+      </div>
+      <div class="card stat">
+        <div class="card-label">支出</div>
+        <div class="card-value expense" id="detailExpense">-0.00</div>
+      </div>
+      <div class="card stat">
+        <div class="card-label">净收入</div>
+        <div class="card-value" id="detailNet">+0.00</div>
+      </div>
+    </div>
+
+    <div id="detailContent" class="content-area"></div>
+  </div>
+
+  <!-- 记账导航 -->
+  <div class="tab-bar">
+    <button class="tab-btn" id="tabHome" onclick="App.showPage('home')">
+      <span class="tab-icon">◉</span>
+      <span class="tab-label">首页</span>
+    </button>
+    <button class="tab-btn" id="tabRecord" onclick="App.showPage('record')">
+      <span class="tab-icon">✎</span>
+      <span class="tab-label">记账</span>
+    </button>
+    <button class="tab-btn" id="tabSummary" onclick="App.showPage('summary')">
+      <span class="tab-icon">▤</span>
+      <span class="tab-label">总结</span>
+    </button>
+    <button class="tab-btn" id="tabDetail" onclick="App.showPage('detail')">
+      <span class="tab-icon">☰</span>
+      <span class="tab-label">明细</span>
+    </button>
+  </div>
+</div>
+
+<!-- 编辑弹窗 -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h3>编辑记录</h3>
+    <div class="type-switch" style="margin-bottom:12px;">
+      <button id="editExpense" class="active" onclick="App.setEditType('expense')">支出</button>
+      <button id="editIncome" onclick="App.setEditType('income')">收入</button>
+    </div>
+    <input type="text" id="editSource" placeholder="来源/物品">
+    <input type="number" id="editAmount" placeholder="金额" step="0.01" min="0">
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="App.closeEdit()">取消</button>
+      <button class="btn-danger" onclick="App.deleteEdit()">删除</button>
+      <button class="btn-primary" onclick="App.saveEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 统计弹窗 -->
+<div class="modal-overlay" id="statsModal">
+  <div class="modal">
+    <h3>数据统计</h3>
+    <div id="statsContent" class="stats-content"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="App.closeStats()">关闭</button>
+      <button class="btn-primary" onclick="App.exportCSV()">导出CSV</button>
+    </div>
+  </div>
+</div>
+
+<!-- 关于弹窗 -->
+<div class="modal-overlay" id="aboutModal">
+  <div class="modal">
+    <h3>账本</h3>
+    <div class="about-content">
+      <p>极简本地记账应用</p>
+      <p class="version">版本 1.0.0</p>
+      <hr>
+      <p>📊 本地存储，隐私安全</p>
+      <p>📱 离线使用，无需网络</p>
+      <p>🔄 CSV格式，方便导入导出</p>
+      <p>💡 收入绿色，支出红色</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-primary" onclick="App.closeAbout()">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 加载提示 -->
+<div id="loadingOverlay" class="loading-overlay">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">加载中...</div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
