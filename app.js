@@ -17,7 +17,8 @@ const CSV_BOM = '\uFEFF'; // Excel 需要 BOM 才识别 UTF-8
 let db = null;
 let dirHandle = null;       // 本地目录句柄
 let dirHandleGranted = false; // 目录是否已授权
-let pendingWrites = false;
+let pendingWrites = false;   // 是否有一次写盘正在进行
+let writeDirty = false;      // 写盘期间是否又有新数据需要补写
 
 /* ====================
    CSV 编解码（RFC 4180）
@@ -42,7 +43,10 @@ const CSV = {
     return CSV_BOM + lines.join('\n');
   },
 
-  /** 把 CSV 文本解析回 records 数组 */
+  /**
+   * 把 CSV 文本解析回 records 数组
+   * 兼容：BOM、\r\n、表头多余空格、Excel 写回的各种格式（日期/布尔值）
+   */
   decode(text) {
     if (!text) return [];
     // 去掉 UTF-8 BOM
@@ -50,29 +54,71 @@ const CSV = {
     // 按行分割（兼容 \r\n 和 \n）
     const rows = this._splitRows(text);
     if (rows.length === 0) return [];
-    // 第一行是表头
-    const headers = this._splitLine(rows[0]);
-    // 找 id 列位置
-    const idx = Object.fromEntries(headers.map((h, i) => [h.trim(), i]));
+    // 表头统一 trim，避免 Excel 写回时带空格导致字段识别失败
+    const headers = this._splitLine(rows[0]).map(h => h.trim());
+
     const records = [];
     for (let i = 1; i < rows.length; i++) {
       if (!rows[i].trim()) continue; // 跳过空行
       const cols = this._splitLine(rows[i]);
       const obj = {};
+      let hasId = false;
+
       for (let j = 0; j < headers.length; j++) {
-        let val = (cols[j] !== undefined ? cols[j] : '').trim();
-        // 类型转换
-        if (headers[j] === 'id' || headers[j] === 'amount') val = val === '' ? 0 : Number(val);
-        else if (headers[j] === 'checked') val = val === 'true' || val === '1';
-        obj[headers[j].trim()] = val;
+        const key = headers[j];
+        if (!key) continue;
+        const raw = (cols[j] !== undefined ? cols[j] : '').trim();
+
+        if (key === 'id') {
+          if (raw === '') continue;              // 缺 id 视为无效行
+          const n = Number(raw);
+          obj.id = Number.isFinite(n) ? n : raw; // 非数字则保留原值
+          hasId = true;
+        } else if (key === 'amount') {
+          const n = Number(raw);
+          obj.amount = Number.isFinite(n) ? n : 0;
+        } else if (key === 'checked') {
+          // Excel 会把布尔值写成 TRUE/FALSE
+          obj.checked = /^(true|1|yes|是)$/i.test(raw);
+        } else if (key === 'date') {
+          obj.date = this._normalizeDate(raw);
+        } else if (key === 'time') {
+          obj.time = this._normalizeTime(raw);
+        } else {
+          obj[key] = raw;
+        }
       }
-      // 必须有 id 才算有效记录
-      if (obj.id) records.push(obj);
+      if (hasId) records.push(obj);
     }
     return records;
   },
 
-  /** 按行分割，但引号内的 \n 不是行分隔 */
+  /** 把 Excel 可能写成的 2026/9/20、2026-09-20 00:00:00 统一成 2026-09-20 */
+  _normalizeDate(v) {
+    const s = String(v == null ? '' : v).trim();
+    const m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/.exec(s);
+    if (m) {
+      return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+    }
+    return s;
+  },
+
+  /** 把 9:5、10:00:00 统一成 09:05、10:00 */
+  _normalizeTime(v) {
+    const s = String(v == null ? '' : v).trim();
+    const m = /^(\d{1,2}):(\d{1,2})/.exec(s);
+    if (m) {
+      return `${String(m[1]).padStart(2, '0')}:${String(m[2]).padStart(2, '0')}`;
+    }
+    return s;
+  },
+
+  /**
+   * 按行分割，但引号内的 \n 不是行分隔
+   * 注意：这里只跟踪引号状态、原样保留字符，
+   * 真正的反转义（"" → "）交给 _splitLine 做一次即可。
+   * 若在此处也反转义，会和 _splitLine 叠加成"二次反转义"，把字段里的双引号吃掉。
+   */
   _splitRows(text) {
     const rows = [];
     let cur = '';
@@ -80,8 +126,6 @@ const CSV = {
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
       if (c === '"') {
-        // 双引号：如果后面还是双引号，跳过（转义的引号）
-        if (inQuote && text[i + 1] === '"') { cur += '"'; i++; continue; }
         inQuote = !inQuote;
         cur += c;
       } else if ((c === '\n' || c === '\r') && !inQuote) {
@@ -403,9 +447,15 @@ const DB = {
     try {
       if (typeof localStorage === 'undefined') return;
       const records = await this.getAll();
-      localStorage.setItem(LS_KEY, JSON.stringify(records));
+      const json = JSON.stringify(records);
+      // localStorage 约 5MB 上限，超大时跳过（IndexedDB 与 CSV 仍然是完整的）
+      if (json.length > 4 * 1024 * 1024) {
+        console.warn('记录过多，跳过 localStorage 快照（IndexedDB / CSV 不受影响）');
+        return;
+      }
+      localStorage.setItem(LS_KEY, json);
     } catch (e) {
-      console.warn('localStorage 快照失败:', e);
+      console.warn('localStorage 快照失败（不影响主存储）:', e);
     }
   },
 
@@ -502,19 +552,26 @@ const DB = {
     });
   },
 
-  /** 把当前 IndexedDB 所有记录同步写入本地 JSON 文件（防抖合并） */
+  /**
+   * 把当前 IndexedDB 所有记录同步写入本地 CSV 文件
+   * 写盘期间若又有新写入，会在本轮结束后自动再写一次（dirty 标记），
+   * 保证不会因为"正在写"而静默丢掉最新数据。
+   */
   async syncToFile() {
     if (!dirHandle || !dirHandleGranted) return false;
-    // 防抖：如果正在写，标记为待写（下一次写完后再写一次最新全量）
-    if (pendingWrites) { return true; }
+    if (pendingWrites) { writeDirty = true; return false; } // 标记待写，稍后补写
     pendingWrites = true;
     try {
-      const records = await this.getAll();
-      await FS.writeFile(records);
+      do {
+        writeDirty = false;
+        const records = await this.getAll();
+        await FS.writeFile(records);
+      } while (writeDirty);
     } catch (e) {
       console.error('同步本地文件失败:', e);
     } finally {
       pendingWrites = false;
+      writeDirty = false;
     }
     return true;
   }
@@ -538,12 +595,35 @@ function formatTime(date) {
 }
 
 function formatMoney(n) {
-  return n.toFixed(2);
+  const v = Number(n);
+  return (Number.isFinite(v) ? v : 0).toFixed(2);
+}
+
+/** 安全取日期字符串：CSV 里可能缺 date，直接用会崩 */
+function dateOf(record) {
+  return String((record && record.date) || '');
+}
+
+/** 安全取时间字符串 */
+function timeOf(record) {
+  return String((record && record.time) || '');
+}
+
+/**
+ * 把 'YYYY-MM-DD' 按【本地时区】解析成 Date
+ * 直接用 new Date('2026-09-20') 会按 UTC 解析，在西半球时区会整体偏一天，
+ * 导致星期显示错误、日期导航原地踏步。
+ */
+function parseLocalDate(dateStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? new Date() : d;
 }
 
 function getWeekday(dateStr) {
   const days = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  return days[new Date(dateStr).getDay()];
+  return days[parseLocalDate(dateStr).getDay()];
 }
 
 function showToast(message) {
@@ -566,6 +646,13 @@ function showToast(message) {
   setTimeout(() => toast.remove(), 2000);
 }
 
+/** 转义 HTML，避免用户可控文本（如目录名、来源）注入标签 */
+function escapeHtml(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 /* ====================
    数据统计
    ==================== */
@@ -582,7 +669,7 @@ const Stats = {
   async byMonth(year, month) {
     const all = await DB.getAll();
     const prefix = `${year}-${String(month).padStart(2, '0')}`;
-    const records = all.filter(r => r.date.startsWith(prefix));
+    const records = all.filter(r => dateOf(r).startsWith(prefix));
     const income = records.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
     const expense = records.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
     return { year, month, income, expense, net: income - expense, count: records.length };
@@ -590,14 +677,14 @@ const Stats = {
 
   async byYear(year) {
     const all = await DB.getAll();
-    const records = all.filter(r => r.date.startsWith(String(year)));
+    const records = all.filter(r => dateOf(r).startsWith(String(year)));
     const totalIncome = records.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
     const totalExpense = records.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
 
     const monthly = {};
     for (let m = 1; m <= 12; m++) {
       const mPrefix = `${year}-${String(m).padStart(2, '0')}`;
-      const mRecords = all.filter(r => r.date.startsWith(mPrefix));
+      const mRecords = all.filter(r => dateOf(r).startsWith(mPrefix));
       const mIncome = mRecords.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
       const mExpense = mRecords.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
       monthly[m] = { income: mIncome, expense: mExpense, net: mIncome - mExpense };
@@ -626,17 +713,29 @@ const App = {
   async init() {
     try {
       await DB.init();
-      // 尝试恢复本地目录句柄（不阻塞 UI）
-      this.restoreStorage();
       this.initDates();
       this.bindEvents();
       this.showLoading(false);
-      // 渲染存储状态
       this.renderStorageStatus();
+      // 异步恢复本地存储；完成后重绘当前页，
+      // 否则从 CSV 恢复的数据要等用户切页才显示，容易误以为"数据丢了"
+      this.restoreStorage()
+        .then(() => this.refreshCurrentPage())
+        .catch((e) => console.error('恢复存储失败:', e));
     } catch (e) {
       console.error('初始化失败:', e);
       alert('初始化失败: ' + e.message);
     }
+  },
+
+  /** 重绘当前所在页面 */
+  refreshCurrentPage() {
+    const active = document.querySelector('.page.active');
+    if (!active) return;
+    const name = active.id.replace('page-', '');
+    if (name === 'record') this.refreshRecordPage();
+    else if (name === 'summary') this.refreshSummaryPage();
+    else if (name === 'detail') this.refreshDetailPage();
   },
 
   /**
@@ -668,13 +767,14 @@ const App = {
         if (m.added > 0) {
           console.log(`[restoreStorage] 从 CSV 补回 ${m.added} 条，保留 ${m.kept} 条本地记录`);
         }
-        // 合并完再存一次 localStorage
-        await DB.saveLS();
       } else if (r.handle && r.permission === 'prompt') {
         // 句柄还在但权限过期，不做破坏性操作
         // IndexedDB/localStorage 的数据继续用，等用户点「重新授权」再合并 CSV
         console.log('[restoreStorage] 目录权限已过期，等用户授权后再合并 CSV');
       }
+
+      // 只有确实有数据时才刷新快照，避免把 localStorage 里仅存的备份覆盖成空
+      if ((await DB.getAll()).length > 0) await DB.saveLS();
 
       this.renderStorageStatus();
     } catch (e) {
@@ -686,24 +786,29 @@ const App = {
 
   /** 用户选择一个本地目录作为数据存储位置 */
   async setStorageLocation() {
-    const old = this.storageHandleName;
+    // 之前是否已经绑定过目录（只有首次绑定才需要做"迁移旧数据"）
+    const hadBinding = this.storagePermission === 'granted' || this.storagePermission === 'prompt';
     const handle = await FS.pickDirectory();
-    if (handle) {
-      this.storagePermission = 'granted';
-      this.storageHandleName = handle.name;
-      this.renderStorageStatus();
-      // 首次设置时，如果 IndexedDB 里有老数据而新目录空，做一次同步
-      if (old === null) {
-        const localRecords = await FS.readFile();
-        if (localRecords && localRecords.length === 0) {
-          const cached = await DB.getAll();
-          if (cached.length > 0) {
-            await FS.writeFile(cached);
-            showToast(`已将 ${cached.length} 条旧数据迁移到新目录`);
-          }
+    if (!handle) return;
+
+    this.storagePermission = 'granted';
+    this.storageHandleName = handle.name;
+    this.renderStorageStatus();
+
+    // 首次绑定：若新目录里 CSV 是空的，而浏览器里已有数据，迁移过去
+    if (!hadBinding) {
+      const fileRecords = await FS.readFile();
+      if (fileRecords && fileRecords.length === 0) {
+        const cached = await DB.getAll();
+        if (cached.length > 0) {
+          await FS.writeFile(cached);
+          showToast(`已将 ${cached.length} 条数据迁移到新目录`);
         }
       }
     }
+
+    // 绑定/合并不改动记录数时也要刷新页面，保证列表与磁盘一致
+    this.refreshCurrentPage();
   },
 
   /** 重新请求已有目录的写权限（浏览器安全模型要求用户手势） */
@@ -712,6 +817,7 @@ const App = {
     if (ok) {
       this.storagePermission = 'granted';
       this.renderStorageStatus();
+      this.refreshCurrentPage();
     }
   },
 
@@ -725,15 +831,16 @@ const App = {
     showToast('已解绑本地存储');
   },
 
-  /** 在首页和关于弹窗里渲染存储状态 */
+  /** 在记账页状态条和关于弹窗里渲染存储状态 */
   renderStorageStatus() {
     const bar = document.getElementById('storageStatusBar');
     const aboutStorage = document.getElementById('aboutStorageInfo');
     const perm = this.storagePermission || 'missing';
+    const name = escapeHtml(this.storageHandleName || '');
 
     let html = '';
     if (perm === 'granted') {
-      html = `<span class="ss-dot ok"></span>本地: <b>${this.storageHandleName || '(已连接)'}</b>`;
+      html = `<span class="ss-dot ok"></span>本地: <b>${name || '(已连接)'}</b>`;
     } else if (perm === 'prompt') {
       html = `<span class="ss-dot warn"></span>本地目录已保存，需要<b onclick="App.reauthStorage()" style="text-decoration:underline;cursor:pointer;">重新授权</b>`;
     } else if (perm === 'denied') {
@@ -754,17 +861,16 @@ const App = {
     if (aboutStorage) {
       const supported = FS.isSupported();
       const extra = supported
-        ? '<br><button class="home-btn small" onclick="App.setStorageLocation()">📁 选择本地目录</button>'
-        : '<br><span style="color:var(--color-expense);">当前浏览器不支持 File System Access API</span><br>请使用 <b>Chrome / Edge / Opera</b> 桌面版';
+        ? '<button class="storage-btn" onclick="App.setStorageLocation()">📁 选择本地目录</button>'
+        : '<p style="color:var(--color-expense);">当前浏览器不支持 File System Access API</p><p>请使用 <b>Chrome / Edge / Opera</b> 桌面版</p>';
       const clearBtn = (perm === 'granted' || perm === 'prompt')
-        ? '<br><button class="home-btn small" style="background:var(--color-expense);" onclick="App.clearStorageLocation()">解绑本地存储</button>'
+        ? '<button class="storage-btn danger" onclick="App.clearStorageLocation()">解绑本地存储</button>'
         : '';
       aboutStorage.innerHTML = `
         <p><b>存储位置</b></p>
         <p style="color:var(--color-text-secondary);font-size:0.8125rem;">${html}</p>
-        <p style="color:var(--color-text-hint);font-size:0.75rem;margin-top:0.25rem;">开启本地存储后，数据将写入你选的目录下的 <code>ledger_data.csv</code>，清浏览器缓存不会丢数据。</p>
-        ${extra}
-        ${clearBtn}
+        <p style="color:var(--color-text-hint);font-size:0.75rem;margin-top:0.25rem;">开启本地存储后，数据会写入所选目录下的 <code>ledger_data.csv</code>，清浏览器缓存也不会丢。</p>
+        <div class="storage-btn-row">${extra}${clearBtn}</div>
       `;
     }
   },
@@ -909,7 +1015,7 @@ const App = {
       return;
     }
 
-    const sorted = [...todayRecords].sort((a, b) => b.time.localeCompare(a.time));
+    const sorted = [...todayRecords].sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
     sorted.forEach(record => {
       listEl.appendChild(this.createRecordItem(record));
     });
@@ -1051,33 +1157,48 @@ const App = {
     document.getElementById(map[view]).classList.add('active');
 
     const now = new Date();
+
+    // 统一取出"当前参考年月"，避免 summaryDate(null) / summaryYear(number) 混用导致崩溃
+    let refYear = Number(this.summaryYear);
+    let refMonth = Number(this.summaryMonth);
+    if (!Number.isFinite(refYear)) {
+      const base = parseLocalDate(this.summaryDate || formatDate(now));
+      refYear = base.getFullYear();
+      refMonth = base.getMonth() + 1;
+    }
+    if (!Number.isFinite(refMonth) || refMonth < 1 || refMonth > 12) refMonth = now.getMonth() + 1;
+
     if (view === 'day') {
-      this.summaryDate = formatDate(now);
+      this.summaryDate = /^\d{4}-\d{2}-\d{2}$/.test(String(this.summaryDate))
+        ? this.summaryDate
+        : formatDate(now);
+      this.summaryYear = parseLocalDate(this.summaryDate).getFullYear();
+      this.summaryMonth = parseLocalDate(this.summaryDate).getMonth() + 1;
     } else if (view === 'month') {
-      const [year, month] = this.summaryDate.split('-').map(Number);
-      this.summaryYear = year;
-      this.summaryMonth = month;
-      this.summaryDate = null;
+      this.summaryYear = refYear;
+      this.summaryMonth = refMonth;
     } else {
-      const [year] = (this.summaryYear || String(now.getFullYear())).split('-').map(Number);
-      this.summaryYear = year || now.getFullYear();
-      this.summaryDate = null;
+      this.summaryYear = refYear;
     }
 
     this.refreshSummaryPage();
   },
 
   navSummary(direction) {
+    const step = Number(direction) || 0;
     if (this.summaryView === 'day') {
-      const d = new Date(this.summaryDate);
-      d.setDate(d.getDate() + direction);
+      const d = parseLocalDate(this.summaryDate);
+      d.setDate(d.getDate() + step);
       this.summaryDate = formatDate(d);
+      this.summaryYear = d.getFullYear();
+      this.summaryMonth = d.getMonth() + 1;
     } else if (this.summaryView === 'month') {
-      this.summaryMonth += direction;
+      this.summaryYear = Number(this.summaryYear) || new Date().getFullYear();
+      this.summaryMonth = (Number(this.summaryMonth) || 1) + step;
       if (this.summaryMonth < 1) { this.summaryMonth = 12; this.summaryYear--; }
       if (this.summaryMonth > 12) { this.summaryMonth = 1; this.summaryYear++; }
     } else {
-      this.summaryYear += direction;
+      this.summaryYear = (Number(this.summaryYear) || new Date().getFullYear()) + step;
     }
     this.refreshSummaryPage();
   },
@@ -1113,7 +1234,7 @@ const App = {
 
     if (this.summaryView === 'day') {
       const records = await DB.getByDate(this.summaryDate);
-      records.sort((a, b) => a.time.localeCompare(b.time));
+      records.sort((a, b) => timeOf(a).localeCompare(timeOf(b)));
       if (records.length === 0) {
         content.innerHTML = '<div class="empty">该日暂无记录</div>';
         return;
@@ -1122,7 +1243,7 @@ const App = {
     } else if (this.summaryView === 'month') {
       const all = await DB.getAll();
       const prefix = `${this.summaryYear}-${String(this.summaryMonth).padStart(2, '0')}`;
-      const records = all.filter(r => r.date.startsWith(prefix));
+      const records = all.filter(r => dateOf(r).startsWith(prefix));
       if (records.length === 0) {
         content.innerHTML = '<div class="empty">该月暂无记录</div>';
         return;
@@ -1146,7 +1267,7 @@ const App = {
         header.innerHTML = `<span>${date} ${weekday}</span><span class="summary">收+${formatMoney(income)} 支-${formatMoney(expense)}</span>`;
         content.appendChild(header);
 
-        dayRecords.sort((a, b) => a.time.localeCompare(b.time));
+        dayRecords.sort((a, b) => timeOf(a).localeCompare(timeOf(b)));
         dayRecords.forEach(r => content.appendChild(this.createSummaryItem(r)));
       });
     } else {
@@ -1224,7 +1345,7 @@ const App = {
     } else {
       const prefix = `${this.detailYear}-${String(this.detailMonth).padStart(2, '0')}`;
       const all = await DB.getAll();
-      records = all.filter(r => r.date.startsWith(prefix));
+      records = all.filter(r => dateOf(r).startsWith(prefix));
     }
 
     const income = records.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
@@ -1264,7 +1385,7 @@ const App = {
       header.innerHTML = `<span>${date} ${weekday}</span><span class="summary">收+${formatMoney(income)} 支-${formatMoney(expense)}</span>`;
       content.appendChild(header);
 
-      dayRecords.sort((a, b) => b.time.localeCompare(a.time));
+      dayRecords.sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
       dayRecords.forEach(r => content.appendChild(this.createDetailItem(r)));
     }
   },
@@ -1352,19 +1473,19 @@ const App = {
 
   /* ---- CSV导出 ---- */
   async exportCSV() {
-    const records = await DB.getAll();
-    if (records.length === 0) {
+    const all = await DB.getAll();
+    if (all.length === 0) {
       alert('暂无数据可导出');
       return;
     }
 
-    // 按日期排序
-    records.sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+    // 按日期 + 时间排序（不修改原数组）
+    const records = [...all].sort((a, b) =>
+      dateOf(a).localeCompare(dateOf(b)) || timeOf(a).localeCompare(timeOf(b))
+    );
 
-    let csv = '\uFEFFid,date,time,source,amount,type,checked\n';
-    records.forEach(r => {
-      csv += `${r.id},${r.date},${r.time},"${r.source.replace(/"/g, '""')}",${r.amount},${r.type},${r.checked ? 'true' : 'false'}\n`;
-    });
+    // 复用统一的 CSV 编码器，保证与本地存储文件格式完全一致
+    const csv = CSV.encode(records);
 
     // 创建下载
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1376,7 +1497,6 @@ const App = {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-
   }
 };
 
