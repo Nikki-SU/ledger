@@ -204,14 +204,38 @@ const FS = {
     }
   },
 
-  /** 从本地文件同步到 IndexedDB 缓存（全量替换） */
+  /**
+   * 从本地文件同步到 IndexedDB（安全合并，永远不覆盖）
+   * 合并规则：
+   *   1. IndexedDB 里有、CSV 里没有 → 保留（用户新增但还没成功写 CSV 的）
+   *   2. CSV 里有、IndexedDB 里没有 → 补进（CSV 独立修改或上次遗留）
+   *   3. 两边都有 → 保留 IndexedDB 版本（用户在 app 里操作的优先）
+   * @returns {{added:number, kept:number}} 合并统计
+   */
   async syncFromFile() {
-    const records = await this.readFile();
-    if (!records) return;
-    await DB.clearAll();
-    for (const r of records) {
-      await DB.addToCache(r);
+    const fileRecords = await this.readFile();
+    if (!fileRecords) return { added: 0, kept: 0 };
+
+    // 从 IndexedDB 读
+    const dbRecords = await DB.getAll();
+    const dbIds = new Set(dbRecords.map(r => r.id));
+
+    // CSV 里有、但 IndexedDB 没有 → 补进
+    let added = 0;
+    for (const r of fileRecords) {
+      if (!dbIds.has(r.id)) {
+        await DB.addToCache(r);
+        added++;
+      }
     }
+
+    // 合并后的数据再写回 CSV（补全刚才新增的），确保两边一致
+    const merged = [...dbRecords, ...fileRecords.filter(r => !dbIds.has(r.id))];
+    if (added > 0) {
+      await this.writeFile(merged);
+    }
+
+    return { added, kept: dbRecords.length };
   },
 
   /** 保存目录句柄到 IndexedDB（句柄可被结构化克隆直接存） */
@@ -330,8 +354,10 @@ const FS = {
 };
 
 /* ====================
-   IndexedDB 缓存层（实际存储）
+   IndexedDB 缓存层 + localStorage 快照兜底
    ==================== */
+
+const LS_KEY = 'ledger_records_cache_v1'; // localStorage 快速快照
 
 const DB = {
   async init() {
@@ -372,10 +398,40 @@ const DB = {
     });
   },
 
-  // 写缓存 + 同步本地文件
+  /** 把 IndexedDB 全部记录存一份到 localStorage 做快照兜底 */
+  async saveLS() {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      const records = await this.getAll();
+      localStorage.setItem(LS_KEY, JSON.stringify(records));
+    } catch (e) {
+      console.warn('localStorage 快照失败:', e);
+    }
+  },
+
+  /** 从 localStorage 快照恢复到 IndexedDB（IndexedDB 意外清空时用） */
+  async restoreFromLS() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (!raw) return 0;
+      const records = JSON.parse(raw);
+      if (!Array.isArray(records) || records.length === 0) return 0;
+      await this.clearAll();
+      for (const r of records) {
+        await this.addToCache(r);
+      }
+      return records.length;
+    } catch (e) {
+      console.warn('从 localStorage 恢复失败:', e);
+      return 0;
+    }
+  },
+
+  // 写缓存 + 同步 localStorage + 同步本地文件
   async add(record) {
     const id = await this.addToCache(record);
     record.id = id;
+    await this.saveLS();
     await this.syncToFile();
     return id;
   },
@@ -393,6 +449,7 @@ const DB = {
       };
       req.onerror = () => reject(req.error);
     });
+    await this.saveLS();
     await this.syncToFile();
   },
 
@@ -403,6 +460,7 @@ const DB = {
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
+    await this.saveLS();
     await this.syncToFile();
   },
 
@@ -581,12 +639,43 @@ const App = {
     }
   },
 
-  /** 异步恢复目录权限（不阻塞启动） */
+  /**
+   * 启动时恢复目录权限 + 合并数据
+   * 恢复策略（安全优先，绝不丢数据）：
+   *   1. IndexedDB 没数据？→ 从 localStorage 快照恢复
+   *   2. 有 CSV 权限？→ 把 CSV 和当前数据做合并（ID 并集，不覆盖）
+   *   3. 没 CSV 权限？→ 就用 IndexedDB/localStorage 的数据
+   */
   async restoreStorage() {
     try {
+      // Step 1: localStorage 快照兜底
+      const dbRecords = await DB.getAll();
+      if (dbRecords.length === 0) {
+        const restored = await DB.restoreFromLS();
+        if (restored > 0) {
+          console.log(`[restoreStorage] IndexedDB 空，从 localStorage 快照恢复了 ${restored} 条`);
+        }
+      }
+
+      // Step 2: 恢复目录句柄 + 合并 CSV
       const r = await FS.restoreAndCheck();
       this.storagePermission = r.permission;
       this.storageHandleName = r.handle ? r.handle.name : null;
+
+      if (r.permission === 'granted') {
+        // 已经有权限，syncFromFile 做安全合并
+        const m = await FS.syncFromFile();
+        if (m.added > 0) {
+          console.log(`[restoreStorage] 从 CSV 补回 ${m.added} 条，保留 ${m.kept} 条本地记录`);
+        }
+        // 合并完再存一次 localStorage
+        await DB.saveLS();
+      } else if (r.handle && r.permission === 'prompt') {
+        // 句柄还在但权限过期，不做破坏性操作
+        // IndexedDB/localStorage 的数据继续用，等用户点「重新授权」再合并 CSV
+        console.log('[restoreStorage] 目录权限已过期，等用户授权后再合并 CSV');
+      }
+
       this.renderStorageStatus();
     } catch (e) {
       console.error('恢复存储失败:', e);
