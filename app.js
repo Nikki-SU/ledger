@@ -1,19 +1,120 @@
 /* ============================================
    账本 - 核心逻辑
-   双通道存储：本地 JSON 文件（主）+ IndexedDB（回退）
-   本地文件通过 File System Access API 实现
+   双通道存储：本地 CSV 文件（主）+ IndexedDB（缓存）
+   CSV 是人类最易读写的格式，Excel/WPS/Numbers 直接打开
    ============================================ */
 
 const DB_NAME = 'LedgerDB';
 const DB_VERSION = 2; // 升级版本以创建 settings store
 const STORE_NAME = 'records';
 const SETTINGS_STORE = 'settings';
-const DATA_FILE = 'ledger_data.json';
+const DATA_FILE = 'ledger_data.csv';
+
+// CSV 表头（顺序即字段顺序）
+const CSV_HEADERS = ['id', 'date', 'time', 'source', 'amount', 'type', 'checked'];
+const CSV_BOM = '\uFEFF'; // Excel 需要 BOM 才识别 UTF-8
 
 let db = null;
 let dirHandle = null;       // 本地目录句柄
 let dirHandleGranted = false; // 目录是否已授权
 let pendingWrites = false;
+
+/* ====================
+   CSV 编解码（RFC 4180）
+   ==================== */
+
+const CSV = {
+  /** 把 records 数组转成 CSV 文本（带 BOM + 表头） */
+  encode(records) {
+    const escape = (val) => {
+      if (val === null || val === undefined) return '';
+      const s = String(val);
+      // 含逗号、引号、换行时用双引号包裹，内部双引号翻倍
+      if (/[",\r\n]/.test(s)) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+    const lines = [CSV_HEADERS.join(',')];
+    for (const r of records) {
+      lines.push(CSV_HEADERS.map(h => escape(r[h])).join(','));
+    }
+    return CSV_BOM + lines.join('\n');
+  },
+
+  /** 把 CSV 文本解析回 records 数组 */
+  decode(text) {
+    if (!text) return [];
+    // 去掉 UTF-8 BOM
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    // 按行分割（兼容 \r\n 和 \n）
+    const rows = this._splitRows(text);
+    if (rows.length === 0) return [];
+    // 第一行是表头
+    const headers = this._splitLine(rows[0]);
+    // 找 id 列位置
+    const idx = Object.fromEntries(headers.map((h, i) => [h.trim(), i]));
+    const records = [];
+    for (let i = 1; i < rows.length; i++) {
+      if (!rows[i].trim()) continue; // 跳过空行
+      const cols = this._splitLine(rows[i]);
+      const obj = {};
+      for (let j = 0; j < headers.length; j++) {
+        let val = (cols[j] !== undefined ? cols[j] : '').trim();
+        // 类型转换
+        if (headers[j] === 'id' || headers[j] === 'amount') val = val === '' ? 0 : Number(val);
+        else if (headers[j] === 'checked') val = val === 'true' || val === '1';
+        obj[headers[j].trim()] = val;
+      }
+      // 必须有 id 才算有效记录
+      if (obj.id) records.push(obj);
+    }
+    return records;
+  },
+
+  /** 按行分割，但引号内的 \n 不是行分隔 */
+  _splitRows(text) {
+    const rows = [];
+    let cur = '';
+    let inQuote = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (c === '"') {
+        // 双引号：如果后面还是双引号，跳过（转义的引号）
+        if (inQuote && text[i + 1] === '"') { cur += '"'; i++; continue; }
+        inQuote = !inQuote;
+        cur += c;
+      } else if ((c === '\n' || c === '\r') && !inQuote) {
+        if (c === '\r' && text[i + 1] === '\n') i++;
+        rows.push(cur); cur = '';
+      } else {
+        cur += c;
+      }
+    }
+    if (cur.length || rows.length === 0) rows.push(cur);
+    return rows;
+  },
+
+  /** 单行按逗号分割，处理引号包裹 */
+  _splitLine(line) {
+    const cols = [];
+    let cur = '';
+    let inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === '"') {
+        if (inQuote && line[i + 1] === '"') { cur += '"'; i++; continue; }
+        inQuote = !inQuote;
+      } else if (c === ',' && !inQuote) {
+        cols.push(cur); cur = '';
+      } else {
+        cur += c;
+      }
+    }
+    cols.push(cur);
+    return cols;
+  }
+};
 
 /* ====================
    File System Access API 封装
@@ -54,53 +155,51 @@ const FS = {
     }
   },
 
-  /** 确保数据文件存在 */
+  /** 确保 CSV 数据文件存在（带表头） */
   async ensureDataFile() {
     if (!dirHandle) return false;
     try {
-      // 尝试获取已存在的文件
       await dirHandle.getFileHandle(DATA_FILE);
     } catch (e) {
-      // 不存在则创建，写入空数组
       if (e.name === 'NotFoundError') {
         const fileHandle = await dirHandle.getFileHandle(DATA_FILE, { create: true });
         const writable = await fileHandle.createWritable();
-        await writable.write('[]');
+        await writable.write(CSV.encode([])); // 只写表头
         await writable.close();
       }
     }
     return true;
   },
 
-  /** 读取本地 JSON 文件 */
+  /** 读取本地 CSV 文件并解析 */
   async readFile() {
     if (!dirHandle) return null;
     try {
       const fileHandle = await dirHandle.getFileHandle(DATA_FILE);
       const file = await fileHandle.getFile();
       const text = await file.text();
-      return JSON.parse(text || '[]');
+      return CSV.decode(text);
     } catch (e) {
       if (e.name === 'NotFoundError') {
         await this.ensureDataFile();
         return [];
       }
-      console.error('读取本地文件失败:', e);
+      console.error('读取本地 CSV 失败:', e);
       return null;
     }
   },
 
-  /** 写入本地 JSON 文件（全量覆盖，每次都写整个数组，防止并发问题） */
+  /** 写入本地 CSV 文件（全量覆盖，带 BOM + 表头） */
   async writeFile(records) {
     if (!dirHandle) return false;
     try {
       const fileHandle = await dirHandle.getFileHandle(DATA_FILE, { create: true });
       const writable = await fileHandle.createWritable();
-      await writable.write(JSON.stringify(records, null, 2));
+      await writable.write(CSV.encode(records));
       await writable.close();
       return true;
     } catch (e) {
-      console.error('写入本地文件失败:', e);
+      console.error('写入本地 CSV 失败:', e);
       return false;
     }
   },
@@ -109,7 +208,6 @@ const FS = {
   async syncFromFile() {
     const records = await this.readFile();
     if (!records) return;
-    // 清空 IndexedDB 再全量写入
     await DB.clearAll();
     for (const r of records) {
       await DB.addToCache(r);
@@ -168,17 +266,13 @@ const FS = {
     });
   },
 
-  /**
-   * 恢复目录并检查权限状态
-   * @returns {object} { handle, permission: 'granted'|'prompt'|'denied'|'missing' }
-   */
+  /** 恢复目录并检查权限 */
   async restoreAndCheck() {
     const handle = await this.loadDirectoryHandle();
     if (!handle) return { handle: null, permission: 'missing' };
     dirHandle = handle;
     let state;
     try {
-      // queryPermission 只返回字符串
       state = await handle.queryPermission({ mode: 'readwrite' });
     } catch (e) {
       state = 'prompt';
@@ -186,7 +280,7 @@ const FS = {
     if (state === 'granted') {
       dirHandleGranted = true;
       await this.ensureDataFile();
-      await this.syncFromFile(); // 启动时从本地文件拉取最新数据
+      await this.syncFromFile();
     } else {
       dirHandleGranted = false;
     }
@@ -579,7 +673,7 @@ const App = {
       aboutStorage.innerHTML = `
         <p><b>存储位置</b></p>
         <p style="color:var(--color-text-secondary);font-size:0.8125rem;">${html}</p>
-        <p style="color:var(--color-text-hint);font-size:0.75rem;margin-top:0.25rem;">开启本地存储后，数据将写入你选的目录下的 <code>ledger_data.json</code>，清浏览器缓存不会丢数据。</p>
+        <p style="color:var(--color-text-hint);font-size:0.75rem;margin-top:0.25rem;">开启本地存储后，数据将写入你选的目录下的 <code>ledger_data.csv</code>，清浏览器缓存不会丢数据。</p>
         ${extra}
         ${clearBtn}
       `;
