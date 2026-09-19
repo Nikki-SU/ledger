@@ -767,7 +767,6 @@ const App = {
       document.getElementById('inputSource').value = '';
       document.getElementById('inputAmount').value = '';
       this.refreshRecordPage();
-      showToast('添加成功');
     } catch (e) {
       alert('添加失败: ' + e.message);
     }
@@ -790,7 +789,6 @@ const App = {
     try {
       await DB.delete(id);
       this.refreshRecordPage();
-      showToast('已删除');
     } catch (e) {
       alert('删除失败');
     }
@@ -928,7 +926,6 @@ const App = {
     try {
       await DB.update(this.editingId, { source, amount, type: this.editType });
       this.closeEdit();
-      showToast('保存成功');
 
       // 刷新当前页面
       const activePage = document.querySelector('.page.active').id.replace('page-', '');
@@ -947,7 +944,6 @@ const App = {
     try {
       await DB.delete(this.editingId);
       this.closeEdit();
-      showToast('已删除');
 
       const activePage = document.querySelector('.page.active').id.replace('page-', '');
       if (activePage === 'record') this.refreshRecordPage();
@@ -1292,7 +1288,6 @@ const App = {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    showToast('导出成功');
   }
 };
 
