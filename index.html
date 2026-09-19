@@ -23,6 +23,12 @@
 
     <div class="storage-status-bar" id="storageStatusBar"></div>
 
+    <div class="install-banner hidden" id="installBanner">
+      <span class="install-text">装到桌面后文件权限会自动保留，不用再反复授权</span>
+      <button class="install-btn" onclick="App.installApp()">安装</button>
+      <button class="install-close" onclick="App.dismissInstallBanner()" title="不再提示">×</button>
+    </div>
+
     <div class="stats-bar">
       <div class="card stat">
         <div class="card-label">收入</div>
@@ -176,7 +182,7 @@
     <h3>账本 · 关于</h3>
     <div class="about-content">
       <p>极简本地记账应用</p>
-      <p class="version">版本 2.2.0 · CSV 文件存储</p>
+      <p class="version">版本 2.3.0 · CSV 文件存储</p>
       <hr>
       <div id="aboutStorageInfo" class="about-storage-info"></div>
     </div>

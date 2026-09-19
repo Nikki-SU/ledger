@@ -355,8 +355,11 @@ const FS = {
     return { handle, permission: state };
   },
 
-  /** 用户手势触发：重新请求权限 */
-  async requestPermission() {
+  /**
+   * 用户手势触发：重新请求权限
+   * @param {boolean} silent 静默模式（顺带授权时用，不弹提示）
+   */
+  async requestPermission(silent = false) {
     if (!dirHandle) return false;
     try {
       const state = await dirHandle.requestPermission({ mode: 'readwrite' });
@@ -364,11 +367,11 @@ const FS = {
         dirHandleGranted = true;
         await this.ensureDataFile();
         await this.syncFromFile();
-        showToast('已授权，数据同步完成');
+        if (!silent) showToast('已授权，数据同步完成');
         return true;
       } else {
         dirHandleGranted = false;
-        showToast('授权被拒绝');
+        if (!silent) showToast('授权被拒绝');
         return false;
       }
     } catch (e) {
@@ -402,6 +405,7 @@ const FS = {
    ==================== */
 
 const LS_KEY = 'ledger_records_cache_v1'; // localStorage 快速快照
+const LS_INSTALL_DISMISSED = 'ledger_install_dismissed_v1'; // 用户关掉过安装引导
 
 const DB = {
   async init() {
@@ -708,6 +712,7 @@ const App = {
   editType: 'expense',
   detailYear: null,
   detailMonth: null,
+  installPromptEvent: null, // beforeinstallprompt 事件（用于引导安装到桌面）
 
   /* ---- 初始化 ---- */
   async init() {
@@ -831,6 +836,69 @@ const App = {
     showToast('已解绑本地存储');
   },
 
+  /* ---- 安装引导 ----
+     浏览器默认只给「本次会话」的文件权限，关掉标签页就失效。
+     按 Chrome 官方方案，应用一旦被安装成 PWA，权限会自动长期保留，
+     所以这里主动引导用户安装，从根上省掉反复授权。 */
+
+  /** 是否已经处于"已安装"（独立窗口）状态 */
+  isStandalone() {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+      || window.navigator.standalone === true;
+  },
+
+  /** 浏览器给出安装能力时记下来并亮出引导条 */
+  captureInstallPrompt(event) {
+    event.preventDefault(); // 拦住浏览器自带的迷你提示，改用我们自己的引导条
+    this.installPromptEvent = event;
+    this.renderInstallBanner();
+  },
+
+  renderInstallBanner() {
+    const el = document.getElementById('installBanner');
+    if (!el) return;
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(LS_INSTALL_DISMISSED) === '1'; } catch (e) { /* 忽略 */ }
+    const show = !!this.installPromptEvent && !this.isStandalone() && !dismissed;
+    el.classList.toggle('hidden', !show);
+  },
+
+  /** 触发浏览器原生安装弹窗 */
+  async installApp() {
+    if (!this.installPromptEvent) return;
+    this.installPromptEvent.prompt();
+    try { await this.installPromptEvent.userChoice; } catch (e) { /* 忽略 */ }
+    this.installPromptEvent = null;
+    this.renderInstallBanner();
+  },
+
+  dismissInstallBanner() {
+    try { localStorage.setItem(LS_INSTALL_DISMISSED, '1'); } catch (e) { /* 忽略 */ }
+    this.installPromptEvent = null;
+    this.renderInstallBanner();
+  },
+
+  /** 安装完成：清掉引导条 */
+  onAppInstalled() {
+    this.installPromptEvent = null;
+    this.renderInstallBanner();
+  },
+
+  /**
+   * 在用户手势内顺带恢复文件权限。
+   * 浏览器硬性要求 requestPermission() 必须由用户手势触发，
+   * 而「点击保存」本身就是手势——在这里顺手把授权补上，
+   * 用户就不必再单独点一次「重新授权」。
+   */
+  async ensureFileAccess() {
+    if (!dirHandle || dirHandleGranted) return;
+    const ok = await FS.requestPermission(true);
+    if (ok) {
+      this.storagePermission = 'granted';
+      this.renderStorageStatus();
+    }
+  },
+
   /** 在记账页状态条和关于弹窗里渲染存储状态 */
   renderStorageStatus() {
     const bar = document.getElementById('storageStatusBar');
@@ -842,7 +910,7 @@ const App = {
     if (perm === 'granted') {
       html = `<span class="ss-dot ok"></span>本地: <b>${name || '(已连接)'}</b>`;
     } else if (perm === 'prompt') {
-      html = `<span class="ss-dot warn"></span>本地目录已保存，需要<b onclick="App.reauthStorage()" style="text-decoration:underline;cursor:pointer;">重新授权</b>`;
+      html = `<span class="ss-dot warn"></span>本地目录已保存，需要<b onclick="App.reauthStorage()" style="text-decoration:underline;cursor:pointer;">重新授权</b><span class="ss-hint">弹窗里选「每次访问时都允许」，以后就不用再点了</span>`;
     } else if (perm === 'denied') {
       html = `<span class="ss-dot bad"></span>本地目录权限已被拒绝，<b onclick="App.setStorageLocation()" style="text-decoration:underline;cursor:pointer;">重新选择目录</b>`;
     } else {
@@ -870,6 +938,7 @@ const App = {
         <p><b>存储位置</b></p>
         <p style="color:var(--color-text-secondary);font-size:0.8125rem;">${html}</p>
         <p style="color:var(--color-text-hint);font-size:0.75rem;margin-top:0.25rem;">开启本地存储后，数据会写入所选目录下的 <code>ledger_data.csv</code>，清浏览器缓存也不会丢。</p>
+        <p style="color:var(--color-text-hint);font-size:0.75rem;">浏览器默认只给「本次会话」的文件权限，关掉标签页即失效——这是浏览器的安全设计，不是本应用的行为。想一次授权长期有效，二选一：<br>① 授权弹窗里选「<b>每次访问时都允许</b>」；<br>② 把本应用<b>安装到桌面</b>，安装后权限会自动保留。</p>
         <div class="storage-btn-row">${extra}${clearBtn}</div>
       `;
     }
@@ -958,6 +1027,7 @@ const App = {
     };
 
     try {
+      await this.ensureFileAccess(); // 权限过期时顺手补授权（点保存本身就是手势）
       await DB.add(record);
       document.getElementById('inputSource').value = '';
       document.getElementById('inputAmount').value = '';
@@ -1122,6 +1192,7 @@ const App = {
     if (amount <= 0) { showToast('金额必须大于0'); return; }
 
     try {
+      await this.ensureFileAccess(); // 权限过期时顺手补授权
       await DB.update(this.editingId, { source, amount, type: this.editType });
       this.closeEdit();
       this.refreshCurrentPage();
@@ -1497,6 +1568,11 @@ const App = {
 /* ====================
    启动
    ==================== */
+
+// 安装引导：装成 PWA 后浏览器会自动长期保留文件权限，从根上省掉反复授权。
+// 放在顶层注册（而不是 DOMContentLoaded 里），避免事件比 DOMContentLoaded 更早触发时漏接。
+window.addEventListener('beforeinstallprompt', (e) => App.captureInstallPrompt(e));
+window.addEventListener('appinstalled', () => App.onAppInstalled());
 
 document.addEventListener('DOMContentLoaded', async () => {
   try {
