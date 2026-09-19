@@ -1099,6 +1099,9 @@ const App = {
     const btnInc = document.getElementById('editIncome');
     btnExp.classList.toggle('active', type === 'expense');
     btnInc.classList.toggle('active', type === 'income');
+    // CSS 需要 .active.expense / .active.income 才会着色，这里确保类型 class 始终存在
+    btnExp.classList.add('expense');
+    btnInc.classList.add('income');
   },
 
   closeEdit() {
@@ -1121,12 +1124,7 @@ const App = {
     try {
       await DB.update(this.editingId, { source, amount, type: this.editType });
       this.closeEdit();
-
-      // 刷新当前页面
-      const activePage = document.querySelector('.page.active').id.replace('page-', '');
-      if (activePage === 'record') this.refreshRecordPage();
-      else if (activePage === 'summary') this.refreshSummaryPage();
-      else if (activePage === 'detail') this.refreshDetailPage();
+      this.refreshCurrentPage();
     } catch (e) {
       alert('保存失败: ' + e.message);
     }
@@ -1139,11 +1137,7 @@ const App = {
     try {
       await DB.delete(this.editingId);
       this.closeEdit();
-
-      const activePage = document.querySelector('.page.active').id.replace('page-', '');
-      if (activePage === 'record') this.refreshRecordPage();
-      else if (activePage === 'summary') this.refreshSummaryPage();
-      else if (activePage === 'detail') this.refreshDetailPage();
+      this.refreshCurrentPage();
     } catch (e) {
       alert('删除失败');
     }

@@ -145,8 +145,8 @@
   <div class="modal">
     <h3>编辑记录</h3>
     <div class="type-switch" style="margin-bottom:12px;">
-      <button id="editExpense" class="active" onclick="App.setEditType('expense')">支出</button>
-      <button id="editIncome" onclick="App.setEditType('income')">收入</button>
+      <button id="editExpense" class="expense active" onclick="App.setEditType('expense')">支出</button>
+      <button id="editIncome" class="income" onclick="App.setEditType('income')">收入</button>
     </div>
     <input type="text" id="editSource" placeholder="来源/物品">
     <input type="number" id="editAmount" placeholder="金额" step="0.01" min="0">
@@ -176,7 +176,7 @@
     <h3>账本 · 关于</h3>
     <div class="about-content">
       <p>极简本地记账应用</p>
-      <p class="version">版本 2.1.0 · CSV 文件存储</p>
+      <p class="version">版本 2.2.0 · CSV 文件存储</p>
       <hr>
       <div id="aboutStorageInfo" class="about-storage-info"></div>
     </div>
