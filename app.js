@@ -713,7 +713,7 @@ const App = {
 
     // 更新底部导航
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    const tabMap = { home: 'tabHome', record: 'tabRecord', summary: 'tabSummary', detail: 'tabDetail' };
+    const tabMap = { record: 'tabRecord', summary: 'tabSummary', detail: 'tabDetail' };
     if (tabMap[pageName]) {
       document.getElementById(tabMap[pageName]).classList.add('active');
     }
@@ -1303,7 +1303,7 @@ const App = {
 document.addEventListener('DOMContentLoaded', async () => {
   try {
     await App.init();
-    App.showPage('home');
+    App.showPage('record');
   } catch (e) {
     console.error('启动失败:', e);
     alert('启动失败: ' + e.message);

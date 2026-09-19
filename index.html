@@ -14,29 +14,14 @@
 </head>
 <body>
 <div class="app">
-  <!-- 主页面 -->
-  <div class="page active" id="page-home">
-    <div class="home">
-      <div class="home-logo">账本</div>
-      <div class="home-sub">本地记账 · 数据在本机</div>
-      <div class="storage-status-bar" id="storageStatusBar"></div>
-      <button class="home-btn primary" onclick="App.showPage('record')">记 账</button>
-      <button class="home-btn secondary" onclick="App.showPage('summary')">总 结</button>
-      <button class="home-btn tertiary" onclick="App.showPage('detail')">明 细</button>
-      <div class="home-actions">
-        <button class="home-btn small" onclick="App.exportCSV()">导出CSV</button>
-        <button class="home-btn small" onclick="App.showAbout()">关于</button>
-      </div>
-    </div>
-  </div>
-
   <!-- 记账页面 -->
-  <div class="page" id="page-record">
+  <div class="page active" id="page-record">
     <div class="nav-bar">
-      <button class="nav-btn" onclick="App.showPage('home')">← 返回</button>
       <div class="nav-title">记账</div>
-      <div class="nav-date" id="recordDateLabel"></div>
+      <button class="nav-btn icon" onclick="App.showAbout()" title="关于与存储">⚙</button>
     </div>
+
+    <div class="storage-status-bar" id="storageStatusBar"></div>
 
     <div class="stats-bar">
       <div class="card stat">
@@ -65,16 +50,15 @@
       </div>
     </div>
 
-    <div class="section-title">今日记录</div>
+    <div class="section-title">今日记录 · <span id="recordDateLabel" style="color:var(--color-text-hint);font-weight:normal;"></span></div>
     <div id="recordList" class="record-list"></div>
   </div>
 
   <!-- 总结页面 -->
   <div class="page" id="page-summary">
     <div class="nav-bar">
-      <button class="nav-btn" onclick="App.showPage('home')">← 返回</button>
       <div class="nav-title">总结</div>
-      <button class="nav-btn" onclick="App.exportCSV()">导出</button>
+      <button class="nav-btn icon" onclick="App.exportCSV()" title="导出 CSV">⇩</button>
     </div>
 
     <div class="view-switch">
@@ -110,9 +94,8 @@
   <!-- 明细页面 -->
   <div class="page" id="page-detail">
     <div class="nav-bar">
-      <button class="nav-btn" onclick="App.showPage('home')">← 返回</button>
       <div class="nav-title">明细</div>
-      <button class="nav-btn" onclick="App.showStats()">统计</button>
+      <button class="nav-btn icon" onclick="App.showStats()" title="统计">⌘</button>
     </div>
 
     <div class="filter-bar">
@@ -140,12 +123,8 @@
     <div id="detailContent" class="content-area"></div>
   </div>
 
-  <!-- 记账导航 -->
+  <!-- 底部 tab-bar -->
   <div class="tab-bar">
-    <button class="tab-btn" id="tabHome" onclick="App.showPage('home')">
-      <span class="tab-icon">◉</span>
-      <span class="tab-label">首页</span>
-    </button>
     <button class="tab-btn" id="tabRecord" onclick="App.showPage('record')">
       <span class="tab-icon">✎</span>
       <span class="tab-label">记账</span>
