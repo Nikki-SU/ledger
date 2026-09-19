@@ -1,207 +1,370 @@
 /* ============================================
    账本 - 核心逻辑
-   使用 IndexedDB 存储数据
+   双通道存储：本地 JSON 文件（主）+ IndexedDB（回退）
+   本地文件通过 File System Access API 实现
    ============================================ */
 
 const DB_NAME = 'LedgerDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // 升级版本以创建 settings store
 const STORE_NAME = 'records';
+const SETTINGS_STORE = 'settings';
+const DATA_FILE = 'ledger_data.json';
 
 let db = null;
+let dirHandle = null;       // 本地目录句柄
+let dirHandleGranted = false; // 目录是否已授权
+let pendingWrites = false;
 
 /* ====================
-   IndexedDB 封装
+   File System Access API 封装
    ==================== */
 
+const FS = {
+  /** 检查浏览器是否支持 */
+  isSupported() {
+    return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+  },
 
-// 兼容性检测
-const supportsIndexedDB = typeof indexedDB !== 'undefined';
-const supportsLocalStorage = typeof localStorage !== 'undefined';
+  /** 用户手势触发：让用户选一个本地目录 */
+  async pickDirectory() {
+    if (!this.isSupported()) {
+      showToast('你的浏览器不支持 File Access API，请用 Chrome/Edge');
+      return null;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({
+        mode: 'readwrite',
+        startIn: 'documents',
+      });
+      // 存 IndexedDB 以便下次恢复
+      await this.saveDirectoryHandle(handle);
+      dirHandle = handle;
+      dirHandleGranted = true;
+      await this.ensureDataFile();
+      // 立刻从本地文件载入数据覆盖 IndexedDB 缓存
+      await this.syncFromFile();
+      showToast(`已连接：${handle.name}`);
+      return handle;
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.error('选择目录失败:', e);
+        showToast('选择目录失败');
+      }
+      return null;
+    }
+  },
 
-// 如果不支持 IndexedDB，使用 localStorage 降级
-if (!supportsIndexedDB && supportsLocalStorage) {
-    console.warn('IndexedDB 不支持，使用 localStorage 降级');
-}
+  /** 确保数据文件存在 */
+  async ensureDataFile() {
+    if (!dirHandle) return false;
+    try {
+      // 尝试获取已存在的文件
+      await dirHandle.getFileHandle(DATA_FILE);
+    } catch (e) {
+      // 不存在则创建，写入空数组
+      if (e.name === 'NotFoundError') {
+        const fileHandle = await dirHandle.getFileHandle(DATA_FILE, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write('[]');
+        await writable.close();
+      }
+    }
+    return true;
+  },
 
-// 安全包装 DB 操作
+  /** 读取本地 JSON 文件 */
+  async readFile() {
+    if (!dirHandle) return null;
+    try {
+      const fileHandle = await dirHandle.getFileHandle(DATA_FILE);
+      const file = await fileHandle.getFile();
+      const text = await file.text();
+      return JSON.parse(text || '[]');
+    } catch (e) {
+      if (e.name === 'NotFoundError') {
+        await this.ensureDataFile();
+        return [];
+      }
+      console.error('读取本地文件失败:', e);
+      return null;
+    }
+  },
+
+  /** 写入本地 JSON 文件（全量覆盖，每次都写整个数组，防止并发问题） */
+  async writeFile(records) {
+    if (!dirHandle) return false;
+    try {
+      const fileHandle = await dirHandle.getFileHandle(DATA_FILE, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(JSON.stringify(records, null, 2));
+      await writable.close();
+      return true;
+    } catch (e) {
+      console.error('写入本地文件失败:', e);
+      return false;
+    }
+  },
+
+  /** 从本地文件同步到 IndexedDB 缓存（全量替换） */
+  async syncFromFile() {
+    const records = await this.readFile();
+    if (!records) return;
+    // 清空 IndexedDB 再全量写入
+    await DB.clearAll();
+    for (const r of records) {
+      await DB.addToCache(r);
+    }
+  },
+
+  /** 保存目录句柄到 IndexedDB（句柄可被结构化克隆直接存） */
+  async saveDirectoryHandle(handle) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onerror = () => reject(request.error);
+      request.onupgradeneeded = (e) => {
+        const d = e.target.result;
+        if (!d.objectStoreNames.contains(SETTINGS_STORE)) {
+          d.createObjectStore(SETTINGS_STORE);
+        }
+      };
+      request.onsuccess = () => {
+        const d = request.result;
+        if (!d.objectStoreNames.contains(SETTINGS_STORE)) {
+          d.close();
+          const req2 = indexedDB.open(DB_NAME, DB_VERSION);
+          req2.onupgradeneeded = (e2) => {
+            e2.target.result.createObjectStore(SETTINGS_STORE);
+          };
+          req2.onsuccess = () => {
+            const d2 = req2.result;
+            const tx = d2.transaction(SETTINGS_STORE, 'readwrite');
+            tx.objectStore(SETTINGS_STORE).put(handle, 'dirHandle');
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          };
+        } else {
+          const tx = d.transaction(SETTINGS_STORE, 'readwrite');
+          tx.objectStore(SETTINGS_STORE).put(handle, 'dirHandle');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        }
+      };
+    });
+  },
+
+  /** 从 IndexedDB 恢复目录句柄 */
+  async loadDirectoryHandle() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const d = request.result;
+        if (!d.objectStoreNames.contains(SETTINGS_STORE)) { resolve(null); return; }
+        const tx = d.transaction(SETTINGS_STORE, 'readonly');
+        const req = tx.objectStore(SETTINGS_STORE).get('dirHandle');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      };
+    });
+  },
+
+  /**
+   * 恢复目录并检查权限状态
+   * @returns {object} { handle, permission: 'granted'|'prompt'|'denied'|'missing' }
+   */
+  async restoreAndCheck() {
+    const handle = await this.loadDirectoryHandle();
+    if (!handle) return { handle: null, permission: 'missing' };
+    dirHandle = handle;
+    let state;
+    try {
+      // queryPermission 只返回字符串
+      state = await handle.queryPermission({ mode: 'readwrite' });
+    } catch (e) {
+      state = 'prompt';
+    }
+    if (state === 'granted') {
+      dirHandleGranted = true;
+      await this.ensureDataFile();
+      await this.syncFromFile(); // 启动时从本地文件拉取最新数据
+    } else {
+      dirHandleGranted = false;
+    }
+    return { handle, permission: state };
+  },
+
+  /** 用户手势触发：重新请求权限 */
+  async requestPermission() {
+    if (!dirHandle) return false;
+    try {
+      const state = await dirHandle.requestPermission({ mode: 'readwrite' });
+      if (state === 'granted') {
+        dirHandleGranted = true;
+        await this.ensureDataFile();
+        await this.syncFromFile();
+        showToast('已授权，数据同步完成');
+        return true;
+      } else {
+        dirHandleGranted = false;
+        showToast('授权被拒绝');
+        return false;
+      }
+    } catch (e) {
+      console.error('请求权限失败:', e);
+      return false;
+    }
+  },
+
+  /** 清除已存的目录设置 */
+  async clear() {
+    try {
+      const d = await new Promise((res, rej) => {
+        const r = indexedDB.open(DB_NAME, DB_VERSION);
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      if (d.objectStoreNames.contains(SETTINGS_STORE)) {
+        const tx = d.transaction(SETTINGS_STORE, 'readwrite');
+        tx.objectStore(SETTINGS_STORE).delete('dirHandle');
+      }
+      dirHandle = null;
+      dirHandleGranted = false;
+    } catch (e) {
+      console.error('清除目录设置失败:', e);
+    }
+  }
+};
+
+/* ====================
+   IndexedDB 缓存层（实际存储）
+   ==================== */
+
 const DB = {
   async init() {
     return new Promise((resolve, reject) => {
       try {
-        if (!supportsIndexedDB) {
-          throw new Error('IndexedDB not supported');
-        }
+        if (typeof indexedDB === 'undefined') throw new Error('IndexedDB not supported');
         const request = indexedDB.open(DB_NAME, DB_VERSION);
-
         request.onerror = () => reject(request.error);
         request.onsuccess = () => {
           db = request.result;
           resolve(db);
         };
-
         request.onupgradeneeded = (event) => {
-          const database = event.target.result;
-          const store = database.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
-          store.createIndex('date', 'date', { unique: false });
-          store.createIndex('type', 'type', { unique: false });
+          const d = event.target.result;
+          if (!d.objectStoreNames.contains(STORE_NAME)) {
+            const store = d.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+            store.createIndex('date', 'date', { unique: false });
+            store.createIndex('type', 'type', { unique: false });
+          }
+          if (!d.objectStoreNames.contains(SETTINGS_STORE)) {
+            d.createObjectStore(SETTINGS_STORE);
+          }
         };
       } catch (e) {
-        console.warn('IndexedDB 初始化失败，使用 localStorage:', e.message);
-        // 降级到 localStorage
-        if (supportsLocalStorage) {
-          try {
-            const data = localStorage.getItem(DB_NAME);
-            if (!data) localStorage.setItem(DB_NAME, '[]');
-            resolve({ type: 'localStorage' });
-          } catch (e2) {
-            reject(new Error('存储初始化失败: ' + e2.message));
-          }
-        } else {
-          reject(new Error('浏览器不支持任何存储'));
-        }
+        reject(e);
       }
     });
   },
 
-  add(record) {
+  // 写入缓存层（内部用）
+  addToCache(record) {
     return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          const data = this._getLocal();
-          record.id = Date.now();
-          data.push(record);
-          this._setLocal(data);
-          resolve(record.id);
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.add(record);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const r = store.add(record);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
     });
   },
 
-  update(id, updates) {
-    return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          const data = this._getLocal();
-          const idx = data.findIndex(r => r.id === id);
-          if (idx >= 0) {
-            Object.assign(data[idx], updates);
-            this._setLocal(data);
-            resolve(data[idx]);
-          } else {
-            reject(new Error('记录不存在'));
-          }
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.get(id);
-
-        request.onsuccess = () => {
-          const record = request.result;
-          if (record) {
-            Object.assign(record, updates);
-            store.put(record).onsuccess = () => resolve(record);
-          } else {
-            reject(new Error('记录不存在'));
-          }
-        };
-
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
-    });
+  // 写缓存 + 同步本地文件
+  async add(record) {
+    const id = await this.addToCache(record);
+    record.id = id;
+    await this.syncToFile();
+    return id;
   },
 
-  delete(id) {
-    return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          const data = this._getLocal();
-          const filtered = data.filter(r => r.id !== id);
-          this._setLocal(filtered);
-          resolve();
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.delete(id);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
+  async update(id, updates) {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(id);
+      req.onsuccess = () => {
+        const record = req.result;
+        if (!record) { reject(new Error('记录不存在')); return; }
+        Object.assign(record, updates);
+        store.put(record).onsuccess = () => resolve();
+      };
+      req.onerror = () => reject(req.error);
     });
+    await this.syncToFile();
+  },
+
+  async delete(id) {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    await this.syncToFile();
   },
 
   getAll() {
     return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          resolve(this._getLocal());
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.getAll();
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const req = tx.objectStore(STORE_NAME).getAll();
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
     });
   },
 
   getById(id) {
     return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          const data = this._getLocal();
-          resolve(data.find(r => r.id === id) || null);
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.get(id);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const req = tx.objectStore(STORE_NAME).get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
     });
   },
 
   getByDate(dateStr) {
     return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          const data = this._getLocal();
-          resolve(data.filter(r => r.date === dateStr));
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const index = store.index('date');
-        const request = index.getAll(dateStr);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const idx = store.index('date');
+      const req = idx.getAll(dateStr);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
     });
   },
 
-  async clearAll() {
+  clearAll() {
     return new Promise((resolve, reject) => {
-      try {
-        if (db && db.type === 'localStorage') {
-          this._setLocal([]);
-          resolve();
-          return;
-        }
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.clear();
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
-      } catch (e) { reject(e); }
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
     });
+  },
+
+  /** 把当前 IndexedDB 所有记录同步写入本地 JSON 文件（防抖合并） */
+  async syncToFile() {
+    if (!dirHandle || !dirHandleGranted) return false;
+    // 防抖：如果正在写，标记为待写（下一次写完后再写一次最新全量）
+    if (pendingWrites) { return true; }
+    pendingWrites = true;
+    try {
+      const records = await this.getAll();
+      await FS.writeFile(records);
+    } catch (e) {
+      console.error('同步本地文件失败:', e);
+    } finally {
+      pendingWrites = false;
+    }
+    return true;
   }
 };
 
@@ -311,12 +474,115 @@ const App = {
   async init() {
     try {
       await DB.init();
+      // 尝试恢复本地目录句柄（不阻塞 UI）
+      this.restoreStorage();
       this.initDates();
       this.bindEvents();
       this.showLoading(false);
+      // 渲染存储状态
+      this.renderStorageStatus();
     } catch (e) {
       console.error('初始化失败:', e);
       alert('初始化失败: ' + e.message);
+    }
+  },
+
+  /** 异步恢复目录权限（不阻塞启动） */
+  async restoreStorage() {
+    try {
+      const r = await FS.restoreAndCheck();
+      this.storagePermission = r.permission;
+      this.storageHandleName = r.handle ? r.handle.name : null;
+      this.renderStorageStatus();
+    } catch (e) {
+      console.error('恢复存储失败:', e);
+    }
+  },
+
+  /* ---- 存储设置 ---- */
+
+  /** 用户选择一个本地目录作为数据存储位置 */
+  async setStorageLocation() {
+    const old = this.storageHandleName;
+    const handle = await FS.pickDirectory();
+    if (handle) {
+      this.storagePermission = 'granted';
+      this.storageHandleName = handle.name;
+      this.renderStorageStatus();
+      // 首次设置时，如果 IndexedDB 里有老数据而新目录空，做一次同步
+      if (old === null) {
+        const localRecords = await FS.readFile();
+        if (localRecords && localRecords.length === 0) {
+          const cached = await DB.getAll();
+          if (cached.length > 0) {
+            await FS.writeFile(cached);
+            showToast(`已将 ${cached.length} 条旧数据迁移到新目录`);
+          }
+        }
+      }
+    }
+  },
+
+  /** 重新请求已有目录的写权限（浏览器安全模型要求用户手势） */
+  async reauthStorage() {
+    const ok = await FS.requestPermission();
+    if (ok) {
+      this.storagePermission = 'granted';
+      this.renderStorageStatus();
+    }
+  },
+
+  /** 清除存储设置（不删数据文件，只解绑浏览器） */
+  async clearStorageLocation() {
+    if (!confirm('确定要解绑本地存储吗？\n（不会删除磁盘上的数据文件，只是解除浏览器关联）')) return;
+    await FS.clear();
+    this.storagePermission = 'missing';
+    this.storageHandleName = null;
+    this.renderStorageStatus();
+    showToast('已解绑本地存储');
+  },
+
+  /** 在首页和关于弹窗里渲染存储状态 */
+  renderStorageStatus() {
+    const bar = document.getElementById('storageStatusBar');
+    const aboutStorage = document.getElementById('aboutStorageInfo');
+    const perm = this.storagePermission || 'missing';
+
+    let html = '';
+    if (perm === 'granted') {
+      html = `<span class="ss-dot ok"></span>本地: <b>${this.storageHandleName || '(已连接)'}</b>`;
+    } else if (perm === 'prompt') {
+      html = `<span class="ss-dot warn"></span>本地目录已保存，需要<b onclick="App.reauthStorage()" style="text-decoration:underline;cursor:pointer;">重新授权</b>`;
+    } else if (perm === 'denied') {
+      html = `<span class="ss-dot bad"></span>本地目录权限已被拒绝，<b onclick="App.setStorageLocation()" style="text-decoration:underline;cursor:pointer;">重新选择目录</b>`;
+    } else {
+      if (FS.isSupported()) {
+        html = `<span class="ss-dot"></span>未开启本地存储 <b onclick="App.setStorageLocation()" style="text-decoration:underline;cursor:pointer;">[选择目录]</b>`;
+      } else {
+        html = `<span class="ss-dot"></span>浏览器不支持本地文件访问（建议用 Chrome/Edge）`;
+      }
+    }
+
+    if (bar) {
+      bar.innerHTML = html;
+      bar.classList.remove('ss-granted', 'ss-prompt', 'ss-denied', 'ss-missing');
+      bar.classList.add(`ss-${perm === 'granted' ? 'granted' : perm === 'prompt' ? 'prompt' : perm === 'denied' ? 'denied' : 'missing'}`);
+    }
+    if (aboutStorage) {
+      const supported = FS.isSupported();
+      const extra = supported
+        ? '<br><button class="home-btn small" onclick="App.setStorageLocation()">📁 选择本地目录</button>'
+        : '<br><span style="color:var(--color-expense);">当前浏览器不支持 File System Access API</span><br>请使用 <b>Chrome / Edge / Opera</b> 桌面版';
+      const clearBtn = (perm === 'granted' || perm === 'prompt')
+        ? '<br><button class="home-btn small" style="background:var(--color-expense);" onclick="App.clearStorageLocation()">解绑本地存储</button>'
+        : '';
+      aboutStorage.innerHTML = `
+        <p><b>存储位置</b></p>
+        <p style="color:var(--color-text-secondary);font-size:0.8125rem;">${html}</p>
+        <p style="color:var(--color-text-hint);font-size:0.75rem;margin-top:0.25rem;">开启本地存储后，数据将写入你选的目录下的 <code>ledger_data.json</code>，清浏览器缓存不会丢数据。</p>
+        ${extra}
+        ${clearBtn}
+      `;
     }
   },
 
@@ -897,6 +1163,7 @@ const App = {
 
   /* ---- 关于弹窗 ---- */
   showAbout() {
+    this.renderStorageStatus();
     document.getElementById('aboutModal').classList.add('show');
   },
 
