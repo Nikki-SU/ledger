@@ -369,8 +369,17 @@ const App = {
     this.currentType = type;
     const btnExp = document.getElementById('btnExpense');
     const btnInc = document.getElementById('btnIncome');
+    const addBtn = document.getElementById('addBtn');
     btnExp.classList.toggle('active', type === 'expense');
+    btnExp.classList.toggle('expense', true);
     btnInc.classList.toggle('active', type === 'income');
+    btnInc.classList.toggle('income', true);
+    // 确认按钮跟随类型变色
+    if (addBtn) {
+      addBtn.style.background = type === 'expense'
+        ? 'var(--color-expense)'
+        : 'var(--color-income)';
+    }
   },
 
   async addRecord() {

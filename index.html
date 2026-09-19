@@ -54,13 +54,13 @@
 
     <div class="input-area">
       <div class="type-switch">
-        <button id="btnExpense" class="active" onclick="App.setType('expense')">支出</button>
-        <button id="btnIncome" onclick="App.setType('income')">收入</button>
+        <button id="btnExpense" class="expense active" onclick="App.setType('expense')">支出</button>
+        <button id="btnIncome" class="income" onclick="App.setType('income')">收入</button>
       </div>
       <div class="input-row">
         <input type="text" id="inputSource" placeholder="物品/来源" autocomplete="off" class="input-source">
         <input type="number" id="inputAmount" placeholder="金额" step="0.01" min="0" class="input-amount">
-        <button class="add-btn" onclick="App.addRecord()">+</button>
+        <button class="add-btn" id="addBtn" onclick="App.addRecord()" style="background:var(--color-expense);">✓</button>
       </div>
     </div>
 
