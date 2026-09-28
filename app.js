@@ -630,6 +630,21 @@ function getWeekday(dateStr) {
   return days[parseLocalDate(dateStr).getDay()];
 }
 
+/** 该日期所在周的第一天（周一） */
+function startOfWeek(dateStr) {
+  const d = parseLocalDate(dateStr);
+  const diff = (d.getDay() + 6) % 7; // 周一=0 … 周日=6
+  d.setDate(d.getDate() - diff);
+  return formatDate(d);
+}
+
+/** 日期加减天数，返回 YYYY-MM-DD（按本地时区） */
+function addDays(dateStr, n) {
+  const d = parseLocalDate(dateStr);
+  d.setDate(d.getDate() + n);
+  return formatDate(d);
+}
+
 function showToast(message) {
   const toast = document.createElement('div');
   toast.textContent = message;
@@ -705,7 +720,8 @@ const Stats = {
 const App = {
   // 状态
   currentType: 'expense',
-  inputDate: null, // 记账页选择的记账日期（YYYY-MM-DD），默认今天
+  recordDate: null,      // 记账页当前选中的日期（YYYY-MM-DD），默认今天；新记录写到这里
+  recordWeekStart: null, // 周视图当前展示那一周的第一天（周一）
   summaryView: 'day',
   summaryDate: null,
   detailShowAll: false,
@@ -950,7 +966,9 @@ const App = {
     this.summaryDate = formatDate(now);
     this.detailYear = now.getFullYear();
     this.detailMonth = now.getMonth() + 1;
-    this.setInputDate(formatDate(now));
+    this.recordDate = formatDate(now);
+    this.recordWeekStart = startOfWeek(this.recordDate);
+    this.renderWeekStrip();
   },
 
   showLoading(show) {
@@ -970,12 +988,6 @@ const App = {
     amount.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.addRecord();
     });
-
-    // 手动改日期时同步状态与高亮
-    const dateEl = document.getElementById('inputDate');
-    if (dateEl) {
-      dateEl.addEventListener('change', () => this.setInputDate(dateEl.value));
-    }
   },
 
   /* ---- 页面切换 ---- */
@@ -1014,31 +1026,79 @@ const App = {
     }
   },
 
-  /* ---- 记账日期 ---- */
+  /* ---- 记账日期（周视图圆圈选择） ---- */
 
-  /** 设置记账日期（YYYY-MM-DD）；非法或为空则回退到今天 */
-  setInputDate(dateStr) {
+  /** 选中某天：该日期就是新记录的归属日，页面统计与列表也切到这天 */
+  setRecordDate(dateStr) {
     const today = formatDate(new Date());
     const value = /^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || '')) ? String(dateStr) : today;
-    this.inputDate = value;
-    const el = document.getElementById('inputDate');
-    if (el) el.value = value;
-    this.syncDateRowUI();
+    this.recordDate = value;
+    this.recordWeekStart = startOfWeek(value);
+    this.renderWeekStrip();
+    this.refreshRecordPage();
   },
 
-  /** 快捷回到今天 */
-  setInputDateToday() {
-    this.setInputDate(formatDate(new Date()));
+  /** 回到今天 */
+  setRecordDateToday() {
+    this.setRecordDate(formatDate(new Date()));
   },
 
-  /** 日期行高亮：挂到非今天时提醒这笔账的去向 */
-  syncDateRowUI() {
-    const row = document.getElementById('dateRow');
-    const btn = document.getElementById('dateTodayBtn');
-    if (!row) return;
-    const offToday = this.inputDate !== formatDate(new Date());
-    row.classList.toggle('off-today', offToday);
-    if (btn) btn.textContent = offToday ? '回到今天' : '今天';
+  /** 上一周 / 下一周：选中日平移 7 天，周视图随之滚动 */
+  navRecordWeek(delta) {
+    const base = this.recordDate || formatDate(new Date());
+    this.setRecordDate(addDays(base, delta * 7));
+  },
+
+  /** 渲染一周 7 个日期圆圈；选中日高亮，今天有标记 */
+  renderWeekStrip() {
+    const strip = document.getElementById('weekDays');
+    if (!strip) return;
+    if (!this.recordDate) this.recordDate = formatDate(new Date());
+    const start = startOfWeek(this.recordDate);
+    this.recordWeekStart = start;
+    const today = formatDate(new Date());
+    const weekChars = ['日', '一', '二', '三', '四', '五', '六'];
+
+    strip.innerHTML = '';
+    for (let i = 0; i < 7; i++) {
+      const ds = addDays(start, i);
+      const d = parseLocalDate(ds);
+
+      const cell = document.createElement('button');
+      cell.className = 'day-cell';
+      if (ds === this.recordDate) cell.classList.add('selected');
+      if (ds === today) cell.classList.add('today');
+      cell.onclick = () => this.setRecordDate(ds);
+
+      const wk = document.createElement('span');
+      wk.className = 'day-week';
+      wk.textContent = '周' + weekChars[d.getDay()];
+
+      const num = document.createElement('span');
+      num.className = 'day-num';
+      num.textContent = String(d.getDate());
+
+      cell.appendChild(wk);
+      cell.appendChild(num);
+      strip.appendChild(cell);
+    }
+
+    // 月份标签：一周跨月/跨年时给出区间
+    const monthEl = document.getElementById('weekMonthLabel');
+    if (monthEl) {
+      const sd = parseLocalDate(start);
+      const ed = parseLocalDate(addDays(start, 6));
+      const sm = sd.getMonth() + 1, em = ed.getMonth() + 1;
+      let label;
+      if (sd.getFullYear() !== ed.getFullYear()) {
+        label = `${sd.getFullYear()}年${sm}月 - ${ed.getFullYear()}年${em}月`;
+      } else if (sm !== em) {
+        label = `${sd.getFullYear()}年${sm}月 - ${em}月`;
+      } else {
+        label = `${sd.getFullYear()}年${sm}月`;
+      }
+      monthEl.textContent = label;
+    }
   },
 
   async addRecord() {
@@ -1053,8 +1113,8 @@ const App = {
 
     const now = new Date();
     const record = {
-      // 默认今天；用户可改到其他日期（例如月底提前规划下月消费）
-      date: this.inputDate || formatDate(now),
+      // 写到记账页当前选中的日期（默认今天，可切到其他日期提前规划）
+      date: this.recordDate || formatDate(now),
       time: formatTime(now),
       source: source,
       amount: amount,
@@ -1067,8 +1127,7 @@ const App = {
       await DB.add(record);
       document.getElementById('inputSource').value = '';
       document.getElementById('inputAmount').value = '';
-      // 保留所选日期，方便连续录入同一日期的多笔；点「回到今天」再切回
-      this.syncDateRowUI();
+      // 保留所选日期，方便连续录入同一天的多笔
       this.refreshRecordPage();
     } catch (e) {
       alert('添加失败: ' + e.message);
@@ -1098,14 +1157,23 @@ const App = {
   },
 
   async refreshRecordPage() {
-    const now = new Date();
-    const today = formatDate(now);
-    const weekday = getWeekday(today);
-    document.getElementById('recordDateLabel').textContent = `${today} ${weekday}`;
+    const today = formatDate(new Date());
+    if (!this.recordDate) this.recordDate = today;
+    const date = this.recordDate;
+    const weekday = getWeekday(date);
+    const d = parseLocalDate(date);
+    const dm = `${d.getMonth() + 1}月${d.getDate()}日`;
 
-    const todayRecords = await DB.getByDate(today);
-    const income = todayRecords.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
-    const expense = todayRecords.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
+    // 标题：选中今天时说明是「今天」，否则显示具体日期，避免误以为记到了今天
+    const titleEl = document.getElementById('recordTitle');
+    if (titleEl) {
+      titleEl.textContent = date === today ? `今天 · ${dm} ${weekday}` : `${dm} ${weekday}`;
+    }
+    this.renderWeekStrip();
+
+    const dayRecords = await DB.getByDate(date);
+    const income = dayRecords.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
+    const expense = dayRecords.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
     const net = income - expense;
 
     document.getElementById('todayIncome').textContent = `+${formatMoney(income)}`;
@@ -1118,12 +1186,12 @@ const App = {
     const listEl = document.getElementById('recordList');
     listEl.innerHTML = '';
 
-    if (todayRecords.length === 0) {
-      listEl.innerHTML = '<div class="empty">今日暂无记录，点击上方添加</div>';
+    if (dayRecords.length === 0) {
+      listEl.innerHTML = `<div class="empty">${date === today ? '今日' : '这天'}暂无记录，点击上方添加</div>`;
       return;
     }
 
-    const sorted = [...todayRecords].sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
+    const sorted = [...dayRecords].sort((a, b) => timeOf(b).localeCompare(timeOf(a)));
     sorted.forEach(record => {
       listEl.appendChild(this.createRecordItem(record));
     });

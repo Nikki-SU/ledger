@@ -420,62 +420,97 @@ input, textarea {
   box-shadow: 0 0.125rem 0.375rem rgba(0,0,0,0.2);
 }
 
-/* 记账日期行：默认收起为今天，选到其他日期时高亮并给出提示 */
-.date-row {
+/* 记账日期：一次显示一周，点圆圈选日期，选中日即记账归属日 */
+.week-strip {
+  background: var(--color-surface);
+  border-bottom: 0.0625rem solid var(--color-border);
+  padding: 0.375rem 0.5rem 0.5rem;
+}
+
+.week-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
-  flex-wrap: wrap;
-  width: 100%;
-  min-width: 0;
-  margin-top: 0.5rem;
 }
 
-.date-label {
+.week-nav {
   flex-shrink: 0;
-  font-size: 0.75rem;
-  color: var(--color-text-hint);
-}
-
-.date-row input[type="date"] {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 2rem;
-  padding: 0 0.5rem;
-  border: 0.0625rem solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: #fafafa;
-  color: var(--color-text);
-  font-size: 0.8125rem;
-  outline: none;
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.date-today-btn {
-  flex-shrink: 0;
-  height: 2rem;
-  padding: 0 0.625rem;
-  border: 0.0625rem solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
+  width: 2rem;
+  height: 1.75rem;
+  border: none;
+  background: none;
   color: var(--color-text-secondary);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   cursor: pointer;
 }
 
-.date-hint {
-  display: none;
-  flex-basis: 100%;
-  font-size: 0.75rem;
-  color: #b07d10;
+.week-nav:active { opacity: 0.5; }
+
+.week-month {
+  flex: 1;
+  text-align: center;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
 }
 
-/* 挂到非今天：整行高亮，提示这条账的去向 */
-.date-row.off-today input[type="date"] {
-  border-color: #d49a1a;
-  background: #fff9ec;
+.week-days {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.125rem;
 }
-.date-row.off-today .date-hint { display: block; }
+
+.day-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.day-week {
+  font-size: 0.6875rem;
+  color: var(--color-text-hint);
+}
+
+.day-num {
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 0.0625rem solid transparent;
+  font-size: 0.875rem;
+  color: var(--color-text);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* 今天：未选中时用描边标记 */
+.day-cell.today .day-num {
+  border-color: var(--color-text-hint);
+}
+
+/* 选中：实心圆圈，与未选中日期明显区分 */
+.day-cell.selected .day-num {
+  background: var(--color-primary);
+  color: var(--color-bg);
+  font-weight: 600;
+}
+
+.day-cell.selected .day-week {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.day-cell:active .day-num { opacity: 0.7; }
 
 /* ====================
    记录列表
@@ -1024,10 +1059,7 @@ input, textarea {
   body { color: var(--color-text); }
   .input-row input { background: #2a2a2a; }
   .input-row input:focus { background: #333; }
-  .date-row input[type="date"] { background: #2a2a2a; }
-  .date-row input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
-  .date-row.off-today input[type="date"] { background: #3a2f16; border-color: #d49a1a; }
-  .date-hint { color: #d8ad4a; }
+  .week-strip { background: var(--color-surface); }
   .type-switch { background: #2a2a2a; }
   .view-switch button { background: #2a2a2a; }
   .date-nav button { background: #2a2a2a; }
