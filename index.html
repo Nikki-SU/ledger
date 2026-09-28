@@ -54,6 +54,13 @@
         <input type="number" id="inputAmount" placeholder="金额" step="0.01" min="0" class="input-amount">
         <button class="add-btn" id="addBtn" onclick="App.addRecord()" style="background:var(--color-expense);">✓</button>
       </div>
+      <!-- 记账日期：默认今天，可挂到其他日期（如提前规划下月消费） -->
+      <div class="date-row" id="dateRow">
+        <label class="date-label" for="inputDate">记账日期</label>
+        <input type="date" id="inputDate">
+        <button class="date-today-btn" id="dateTodayBtn" onclick="App.setInputDateToday()">今天</button>
+        <span class="date-hint">这笔记入所选日期，不会出现在今日列表</span>
+      </div>
     </div>
 
     <div class="section-title">今日记录 · <span id="recordDateLabel" style="color:var(--color-text-hint);font-weight:normal;"></span></div>
@@ -182,7 +189,7 @@
     <h3>账本 · 关于</h3>
     <div class="about-content">
       <p>极简本地记账应用</p>
-      <p class="version">版本 2.3.0 · CSV 文件存储</p>
+      <p class="version">版本 2.4.0 · CSV 文件存储</p>
       <hr>
       <div id="aboutStorageInfo" class="about-storage-info"></div>
     </div>

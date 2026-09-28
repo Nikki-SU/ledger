@@ -420,6 +420,63 @@ input, textarea {
   box-shadow: 0 0.125rem 0.375rem rgba(0,0,0,0.2);
 }
 
+/* 记账日期行：默认收起为今天，选到其他日期时高亮并给出提示 */
+.date-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.5rem;
+}
+
+.date-label {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--color-text-hint);
+}
+
+.date-row input[type="date"] {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 2rem;
+  padding: 0 0.5rem;
+  border: 0.0625rem solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: #fafafa;
+  color: var(--color-text);
+  font-size: 0.8125rem;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.date-today-btn {
+  flex-shrink: 0;
+  height: 2rem;
+  padding: 0 0.625rem;
+  border: 0.0625rem solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.date-hint {
+  display: none;
+  flex-basis: 100%;
+  font-size: 0.75rem;
+  color: #b07d10;
+}
+
+/* 挂到非今天：整行高亮，提示这条账的去向 */
+.date-row.off-today input[type="date"] {
+  border-color: #d49a1a;
+  background: #fff9ec;
+}
+.date-row.off-today .date-hint { display: block; }
+
 /* ====================
    记录列表
    ==================== */
@@ -967,6 +1024,10 @@ input, textarea {
   body { color: var(--color-text); }
   .input-row input { background: #2a2a2a; }
   .input-row input:focus { background: #333; }
+  .date-row input[type="date"] { background: #2a2a2a; }
+  .date-row input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7); }
+  .date-row.off-today input[type="date"] { background: #3a2f16; border-color: #d49a1a; }
+  .date-hint { color: #d8ad4a; }
   .type-switch { background: #2a2a2a; }
   .view-switch button { background: #2a2a2a; }
   .date-nav button { background: #2a2a2a; }

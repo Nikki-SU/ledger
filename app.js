@@ -705,6 +705,7 @@ const Stats = {
 const App = {
   // 状态
   currentType: 'expense',
+  inputDate: null, // 记账页选择的记账日期（YYYY-MM-DD），默认今天
   summaryView: 'day',
   summaryDate: null,
   detailShowAll: false,
@@ -949,6 +950,7 @@ const App = {
     this.summaryDate = formatDate(now);
     this.detailYear = now.getFullYear();
     this.detailMonth = now.getMonth() + 1;
+    this.setInputDate(formatDate(now));
   },
 
   showLoading(show) {
@@ -968,6 +970,12 @@ const App = {
     amount.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.addRecord();
     });
+
+    // 手动改日期时同步状态与高亮
+    const dateEl = document.getElementById('inputDate');
+    if (dateEl) {
+      dateEl.addEventListener('change', () => this.setInputDate(dateEl.value));
+    }
   },
 
   /* ---- 页面切换 ---- */
@@ -1006,6 +1014,33 @@ const App = {
     }
   },
 
+  /* ---- 记账日期 ---- */
+
+  /** 设置记账日期（YYYY-MM-DD）；非法或为空则回退到今天 */
+  setInputDate(dateStr) {
+    const today = formatDate(new Date());
+    const value = /^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || '')) ? String(dateStr) : today;
+    this.inputDate = value;
+    const el = document.getElementById('inputDate');
+    if (el) el.value = value;
+    this.syncDateRowUI();
+  },
+
+  /** 快捷回到今天 */
+  setInputDateToday() {
+    this.setInputDate(formatDate(new Date()));
+  },
+
+  /** 日期行高亮：挂到非今天时提醒这笔账的去向 */
+  syncDateRowUI() {
+    const row = document.getElementById('dateRow');
+    const btn = document.getElementById('dateTodayBtn');
+    if (!row) return;
+    const offToday = this.inputDate !== formatDate(new Date());
+    row.classList.toggle('off-today', offToday);
+    if (btn) btn.textContent = offToday ? '回到今天' : '今天';
+  },
+
   async addRecord() {
     const source = document.getElementById('inputSource').value.trim();
     const amountText = document.getElementById('inputAmount').value.trim();
@@ -1018,7 +1053,8 @@ const App = {
 
     const now = new Date();
     const record = {
-      date: formatDate(now),
+      // 默认今天；用户可改到其他日期（例如月底提前规划下月消费）
+      date: this.inputDate || formatDate(now),
       time: formatTime(now),
       source: source,
       amount: amount,
@@ -1031,6 +1067,8 @@ const App = {
       await DB.add(record);
       document.getElementById('inputSource').value = '';
       document.getElementById('inputAmount').value = '';
+      // 保留所选日期，方便连续录入同一日期的多笔；点「回到今天」再切回
+      this.syncDateRowUI();
       this.refreshRecordPage();
     } catch (e) {
       alert('添加失败: ' + e.message);
