@@ -630,14 +630,6 @@ function getWeekday(dateStr) {
   return days[parseLocalDate(dateStr).getDay()];
 }
 
-/** 该日期所在周的第一天（周一） */
-function startOfWeek(dateStr) {
-  const d = parseLocalDate(dateStr);
-  const diff = (d.getDay() + 6) % 7; // 周一=0 … 周日=6
-  d.setDate(d.getDate() - diff);
-  return formatDate(d);
-}
-
 /** 日期加减天数，返回 YYYY-MM-DD（按本地时区） */
 function addDays(dateStr, n) {
   const d = parseLocalDate(dateStr);
@@ -720,8 +712,7 @@ const Stats = {
 const App = {
   // 状态
   currentType: 'expense',
-  recordDate: null,      // 记账页当前选中的日期（YYYY-MM-DD），默认今天；新记录写到这里
-  recordWeekStart: null, // 周视图当前展示那一周的第一天（周一）
+  recordDate: null, // 记账页当前选中的日期（YYYY-MM-DD），默认今天；新记录写到这里
   summaryView: 'day',
   summaryDate: null,
   detailShowAll: false,
@@ -967,8 +958,7 @@ const App = {
     this.detailYear = now.getFullYear();
     this.detailMonth = now.getMonth() + 1;
     this.recordDate = formatDate(now);
-    this.recordWeekStart = startOfWeek(this.recordDate);
-    this.renderWeekStrip();
+    this.renderDayStrip();
   },
 
   showLoading(show) {
@@ -1026,15 +1016,14 @@ const App = {
     }
   },
 
-  /* ---- 记账日期（周视图圆圈选择） ---- */
+  /* ---- 记账日期（固定 7 天圆圈，选中日居中） ---- */
 
   /** 选中某天：该日期就是新记录的归属日，页面统计与列表也切到这天 */
   setRecordDate(dateStr) {
     const today = formatDate(new Date());
     const value = /^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || '')) ? String(dateStr) : today;
     this.recordDate = value;
-    this.recordWeekStart = startOfWeek(value);
-    this.renderWeekStrip();
+    this.renderDayStrip();
     this.refreshRecordPage();
   },
 
@@ -1043,30 +1032,27 @@ const App = {
     this.setRecordDate(formatDate(new Date()));
   },
 
-  /** 上一周 / 下一周：选中日平移 7 天，周视图随之滚动 */
-  navRecordWeek(delta) {
-    const base = this.recordDate || formatDate(new Date());
-    this.setRecordDate(addDays(base, delta * 7));
-  },
-
-  /** 渲染一周 7 个日期圆圈；选中日高亮，今天有标记 */
-  renderWeekStrip() {
-    const strip = document.getElementById('weekDays');
+  /**
+   * 渲染固定 7 个日期圆圈：
+   * 选中的日期永远在最中间，左右各展示 3 天（前三天 + 当天 + 后三天）。
+   * 点两侧的圆圈即把该日期选为新中心，圆圈随之整体滚动。
+   */
+  renderDayStrip() {
+    const strip = document.getElementById('stripDays');
     if (!strip) return;
     if (!this.recordDate) this.recordDate = formatDate(new Date());
-    const start = startOfWeek(this.recordDate);
-    this.recordWeekStart = start;
+    const center = this.recordDate;
     const today = formatDate(new Date());
     const weekChars = ['日', '一', '二', '三', '四', '五', '六'];
 
     strip.innerHTML = '';
-    for (let i = 0; i < 7; i++) {
-      const ds = addDays(start, i);
+    for (let off = -3; off <= 3; off++) {
+      const ds = addDays(center, off);
       const d = parseLocalDate(ds);
 
       const cell = document.createElement('button');
       cell.className = 'day-cell';
-      if (ds === this.recordDate) cell.classList.add('selected');
+      if (off === 0) cell.classList.add('selected'); // 选中日固定在中间
       if (ds === today) cell.classList.add('today');
       cell.onclick = () => this.setRecordDate(ds);
 
@@ -1083,11 +1069,11 @@ const App = {
       strip.appendChild(cell);
     }
 
-    // 月份标签：一周跨月/跨年时给出区间
-    const monthEl = document.getElementById('weekMonthLabel');
+    // 月份标签：窗口跨月/跨年时给出区间
+    const monthEl = document.getElementById('stripMonthLabel');
     if (monthEl) {
-      const sd = parseLocalDate(start);
-      const ed = parseLocalDate(addDays(start, 6));
+      const sd = parseLocalDate(addDays(center, -3));
+      const ed = parseLocalDate(addDays(center, 3));
       const sm = sd.getMonth() + 1, em = ed.getMonth() + 1;
       let label;
       if (sd.getFullYear() !== ed.getFullYear()) {
@@ -1169,7 +1155,7 @@ const App = {
     if (titleEl) {
       titleEl.textContent = date === today ? `今天 · ${dm} ${weekday}` : `${dm} ${weekday}`;
     }
-    this.renderWeekStrip();
+    this.renderDayStrip();
 
     const dayRecords = await DB.getByDate(date);
     const income = dayRecords.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);

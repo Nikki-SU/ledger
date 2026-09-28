@@ -4,7 +4,7 @@
    发版即生效：新 SW 立即接管，无需用户清缓存
    ============================================ */
 
-const CACHE_NAME = 'ledger-cache-v4';
+const CACHE_NAME = 'ledger-cache-v5';
 
 // 全部使用相对路径，自动适配根目录 / 子目录（如 GitHub Pages 的 /ledger/）部署
 const PRECACHE_URLS = [

@@ -29,14 +29,10 @@
       <button class="install-close" onclick="App.dismissInstallBanner()" title="不再提示">×</button>
     </div>
 
-    <!-- 日期选择：一次显示一周，点圆圈选日期，选中的日期就是记账归属日 -->
-    <div class="week-strip">
-      <div class="week-head">
-        <button class="week-nav" onclick="App.navRecordWeek(-1)" title="上一周">◀</button>
-        <span class="week-month" id="weekMonthLabel"></span>
-        <button class="week-nav" onclick="App.navRecordWeek(1)" title="下一周">▶</button>
-      </div>
-      <div class="week-days" id="weekDays"></div>
+    <!-- 日期选择：固定 7 个圆圈，选中的日期永远在正中间，两侧各 3 天 -->
+    <div class="day-strip">
+      <div class="strip-month" id="stripMonthLabel"></div>
+      <div class="strip-days" id="stripDays"></div>
     </div>
 
     <div class="stats-bar">
@@ -192,7 +188,7 @@
     <h3>账本 · 关于</h3>
     <div class="about-content">
       <p>极简本地记账应用</p>
-      <p class="version">版本 2.5.0 · CSV 文件存储</p>
+      <p class="version">版本 2.5.1 · CSV 文件存储</p>
       <hr>
       <div id="aboutStorageInfo" class="about-storage-info"></div>
     </div>
